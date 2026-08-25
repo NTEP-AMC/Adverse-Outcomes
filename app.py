@@ -143,16 +143,13 @@ def parse_gujarati_time(val):
     val_str = str(val).strip().lower()
     if not val_str or val_str == 'nan': return pd.NA
 
-    # Translate Gujarati Numerals to English Numerals
     guj_digits = str.maketrans('૦૧૨૩૪૫૬૭૮૯', '0123456789')
     val_str = val_str.translate(guj_digits)
 
-    # Extract standard float numbers
     nums = re.findall(r'\d+\.?\d*', val_str)
     if not nums: return pd.NA
     num = float(nums[0])
 
-    # Convert to months if year keywords are detected
     if any(k in val_str for k in ['year', 'yr', 'વર્ષ', 'સાલ', 'varsh', 'sal']):
         return int(num * 12)
     else:
@@ -165,7 +162,6 @@ def clean_resided(val):
     if val_str in ['ના', 'NA', 'NO']: return 'NO'
     return val_str
 
-# Apply the cleaners immediately to df_live
 if not df_live.empty:
     if COL_MONTHS_RESIDING in df_live.columns:
         df_live[COL_MONTHS_RESIDING] = df_live[COL_MONTHS_RESIDING].apply(parse_gujarati_time)
@@ -259,7 +255,6 @@ ahmedabad_pct_str = "0%"
 if total_adverse_count > 0 and 'ZONE' in df_live.columns:
     zone_mask = df_live['ZONE'].astype(str).str.upper().str.contains("AHMEDABAD|EAST|WEST|NORTH|SOUTH|CENTRAL|AMC", regex=True, na=False)
     
-    # NEW RULE: If Months Residing is less than 6, they are stripped of residency status. (If blank, we keep them).
     if COL_MONTHS_RESIDING in df_live.columns:
         months_series = pd.to_numeric(df_live[COL_MONTHS_RESIDING], errors='coerce')
         months_valid_mask = (months_series >= 6) | (months_series.isna())
@@ -275,14 +270,21 @@ if total_adverse_count > 0 and 'ZONE' in df_live.columns:
 # ---------------------------------------------------------
 META_ENTRY_COLS = [COL_SUBMITTED_BY, COL_LAST_UPDATED]
 COMORBIDITY_OPTIONS = [
-    "Diabetes", "Cardiovascular disease", "Hypertension", "COPD", "Asthma",
+    "", "Diabetes", "Cardiovascular disease", "Hypertension", "COPD", "Asthama",
     "Other lung disease", "Chronic liver disease", "Chronic kidney disease", "Cancer",
     "HIV/AIDS", "Occupational lung disease", "Anaemia", "Mental health disorder",
     "Autoimmune disorder", "Severe malnutrition", "Congenital disorder",
-    "Chronic alcoholism", "P/H of COVID-19", "Sickle cell trait or anaemia",
-    "Other", "Multiple", "NA",
+    "Chronic alcoholism", "P/H of covid 19", "Sickle cell trait or anaemia",
+    "Other", "Multiple", "NA"
 ]
-PLACE_OF_DEATH_OPTIONS = ["", "Home", "Government Hospital", "Private Hospital", "In Transit / Enroute", "Other"]
+
+PLACE_OF_DEATH_OPTIONS = [
+    "", "Home", "PHC", "UHC", "CHC", "SDH", "DH", "Medical College", 
+    "Grant in aid hospital", "ESIS Hospital", "ESIC Hospital", 
+    "Other Central GOVT Hospital", "Private Hospital", "Private NGO", 
+    "In transit", "Other", "Not Known"
+]
+
 TRANSFER_REASON_OPTIONS = ["", "Migration for Work", "Family Relocation", "Better Treatment Facility", "Other"]
 INDIAN_STATES_UTS = [
     "", "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", "Goa", "Gujarat",
@@ -302,41 +304,52 @@ def colnum_to_letter(n):
     return letters
 
 # ---------------------------------------------------------
-# 🧮 BIFURCATED BREAKDOWNS (Comorbidity / Residency / Transfer-Reject)
+# 🧮 BIFURCATED BREAKDOWNS (Comorbidity / Residency / Outcomes)
 # ---------------------------------------------------------
 comorbidity_breakdown = {}
 residency_breakdown = {}
-transfer_reject_breakdown = {}
+outcome_breakdown = {}
 entry_completed_count = 0
 
 if not df_live.empty:
+    # Residency Breakdown with Missing Data Tracker
     if COL_RESIDED_THROUGHOUT in df_live.columns:
         resided_series = df_live[COL_RESIDED_THROUGHOUT].fillna("").astype(str).str.strip().str.upper()
         entry_completed_count = int((resided_series != "").sum())
+        pending_count = total_adverse_count - entry_completed_count
+        
         residency_breakdown = {
             "Resided in Ahmedabad Throughout": int((resided_series == "YES").sum()),
             "Did Not Reside Throughout":       int((resided_series == "NO").sum()),
         }
+        if pending_count > 0:
+            residency_breakdown["⏳ Data Pending"] = pending_count
+
+    # Comorbidity Breakdown with Missing Data Tracker
     if COL_COMORBIDITY in df_live.columns:
-        comorb_counts = {label: 0 for label in COMORBIDITY_OPTIONS}
+        comorb_counts = {label: 0 for label in COMORBIDITY_OPTIONS if label != ""}
+        comorb_pending_count = 0
+        
         for val in df_live[COL_COMORBIDITY].fillna(""):
-            for token in split_multi(val):
-                for label in COMORBIDITY_OPTIONS:
-                    if token.lower() == label.lower():
-                        comorb_counts[label] += 1
-                        break
+            val_str = str(val).strip()
+            if not val_str:
+                comorb_pending_count += 1
+            else:
+                for token in split_multi(val_str):
+                    for label in COMORBIDITY_OPTIONS:
+                        if label and token.lower() == label.lower():
+                            comorb_counts[label] += 1
+                            break
+                            
         comorbidity_breakdown = {k: v for k, v in sorted(comorb_counts.items(), key=lambda x: x[1], reverse=True) if v > 0}
-    if COL_TRANSFER_OUT_DATE in df_live.columns and COL_REJECT_DATE in df_live.columns:
-        transfer_series = df_live[COL_TRANSFER_OUT_DATE].fillna("").astype(str).str.strip()
-        reject_series = df_live[COL_REJECT_DATE].fillna("").astype(str).str.strip()
-        transferred_count = int((transfer_series != "").sum())
-        rejected_count = int((reject_series != "").sum())
-        retained_count = max(total_adverse_count - transferred_count - rejected_count, 0)
-        transfer_reject_breakdown = {
-            "Retained in AMC":        retained_count,
-            "Transferred (Non-AMC)":  transferred_count,
-            "Rejected":               rejected_count,
-        }
+        if comorb_pending_count > 0:
+            comorbidity_breakdown["⏳ Data Pending"] = comorb_pending_count
+
+    # New Adverse Outcomes Breakdown (Replaces Transfer & Reject)
+    if 'Treatment Outcome' in df_live.columns:
+        outcomes_series = df_live['Treatment Outcome'].fillna("").astype(str).str.strip().str.upper()
+        outcomes_dict = outcomes_series.value_counts().to_dict()
+        outcome_breakdown = {k: v for k, v in outcomes_dict.items() if k != ""}
 
 # ==========================================
 # 📊 EXECUTIVE SUMMARY (MOH VIEW) — REDESIGNED
@@ -396,16 +409,21 @@ with kpi5:
 # ---------------------------------------------------------
 st.markdown("<div style='height:22px;'></div>", unsafe_allow_html=True)
 st.markdown("<h4 style='color: #334155; font-weight: 700; font-size:16px;'>Detailed Breakdown of Adverse Outcomes</h4>", unsafe_allow_html=True)
-st.markdown("<div style='font-size:12px; color:#94a3b8; margin-bottom:14px;'>Based on field entries below. Percentages are calculated out of all records, so they will read 0% until entries are filled in. A record with more than one condition (e.g. Diabetes + HIV) is counted in every matching category, so totals can add up to more than 100%.</div>", unsafe_allow_html=True)
 
 def render_breakdown_card(title, data_dict, total, accent):
     if total > 0 and data_dict:
         row_parts = []
         for label, count in data_dict.items():
             pct = (count / total * 100) if total > 0 else 0
+            
+            # Change styling slightly if it's the pending data row
+            is_pending = label == "⏳ Data Pending"
+            val_color = "#dc2626" if is_pending else "#0f172a"
+            bar_color = "#f87171" if is_pending else accent
+            
             row_parts.append(
-                f'<div class="breakdown-row"><span>{label}</span><span><b>{count}</b>&nbsp;({pct:.0f}%)</span></div>'
-                f'<div class="progress-bg"><div class="progress-fill" style="width:{pct:.0f}%; background:{accent};"></div></div>'
+                f'<div class="breakdown-row"><span>{label}</span><span style="color:{val_color}; font-weight:700;">{count}&nbsp;({pct:.0f}%)</span></div>'
+                f'<div class="progress-bg"><div class="progress-fill" style="width:{pct:.0f}%; background:{bar_color};"></div></div>'
             )
         rows_html = "".join(row_parts)
     else:
@@ -423,7 +441,7 @@ with b1:
 with b2:
     st.markdown(render_breakdown_card("Ahmedabad Residency (During Treatment)", residency_breakdown, total_adverse_count, accent="#2563eb"), unsafe_allow_html=True)
 with b3:
-    st.markdown(render_breakdown_card("Transfer & Rejection Overview", transfer_reject_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
+    st.markdown(render_breakdown_card("Adverse Outcomes Overview", outcome_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
 
 st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_allow_html=True)
 # ==========================================
@@ -432,7 +450,7 @@ st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_al
 st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Interactive Line List & Field Data Entry</h3>", unsafe_allow_html=True)
 st.markdown(
     "<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Double-click a cell to edit it, then hit Save. "
-    "For the <b>Comorbidity</b> column, type in the multiple conditions separated by commas (e.g. Diabetes, HIV/AIDS).</div>",
+    "If a patient has more than one comorbidity, select <b>Multiple</b> from the dropdown and list them in the <b>Remarks</b> column.</div>",
     unsafe_allow_html=True
 )
 
@@ -488,8 +506,9 @@ if not df_live.empty:
             COL_PLACE_OF_DEATH, options=PLACE_OF_DEATH_OPTIONS,
             help="Only applicable when Treatment Outcome is Died"
         ),
-        COL_COMORBIDITY: st.column_config.TextColumn(
-            COL_COMORBIDITY, help="Type comorbidities separated by commas (e.g. Diabetes, HIV/AIDS)"
+        COL_COMORBIDITY: st.column_config.SelectboxColumn(
+            COL_COMORBIDITY, options=COMORBIDITY_OPTIONS, 
+            help="Select condition. If Multiple, log details in Remarks."
         ),
         COL_STATE_NON_AMC: st.column_config.SelectboxColumn(COL_STATE_NON_AMC, options=INDIAN_STATES_UTS),
         COL_DISTRICT_NON_AMC: st.column_config.TextColumn(COL_DISTRICT_NON_AMC),
