@@ -86,6 +86,17 @@ if not st.session_state.auth:
 # ==========================================
 # 🟢 MAIN APPLICATION & DATABASE CONNECTIONS
 # ==========================================
+# Post-Login Header with Logos
+b64_amc = img_to_b64("amc.png")
+b64_ntep = img_to_b64("ntep.png")
+st.markdown(f"""
+<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;'>
+    <img src='data:image/png;base64,{b64_amc}' height='70'>
+    <h2 style='margin:0; font-weight:900; color: #0A3A6E;'>AMC | NTEP DASHBOARD</h2>
+    <img src='data:image/png;base64,{b64_ntep}' height='70'>
+</div>
+""", unsafe_allow_html=True)
+
 st.markdown(f"<div style='background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px; font-weight: bold; margin-bottom: 10px;'>👤 Logged in as: {st.session_state.target} ({st.session_state.role})</div>", unsafe_allow_html=True)
 
 @st.cache_resource
@@ -135,6 +146,41 @@ REQUIRED_ENTRY_COLS = [
     COL_TRANSFER_OUT_DATE, COL_REJECT_DATE, COL_REMARKS,
 ]
 
+META_ENTRY_COLS = [COL_SUBMITTED_BY, COL_LAST_UPDATED]
+COMORBIDITY_OPTIONS = [
+    "", "Diabetes", "Cardiovascular disease", "Hypertension", "COPD", "Asthama",
+    "Other lung disease", "Chronic liver disease", "Chronic kidney disease", "Cancer",
+    "HIV/AIDS", "Occupational lung disease", "Anaemia", "Mental health disorder",
+    "Autoimmune disorder", "Severe malnutrition", "Congenital disorder",
+    "Chronic alcoholism", "P/H of covid 19", "Sickle cell trait or anaemia",
+    "Other", "Multiple", "NA"
+]
+
+PLACE_OF_DEATH_OPTIONS = [
+    "", "Home", "PHC", "UHC", "CHC", "SDH", "DH", "Medical College", 
+    "Grant in aid hospital", "ESIS Hospital", "ESIC Hospital", 
+    "Other Central GOVT Hospital", "Private Hospital", "Private NGO", 
+    "In transit", "Other", "Not Known"
+]
+
+TRANSFER_REASON_OPTIONS = ["", "Migration for Work", "Family Relocation", "Better Treatment Facility", "Other"]
+INDIAN_STATES_UTS = [
+    "", "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", "Goa", "Gujarat",
+    "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra",
+    "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim",
+    "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal",
+    "Andaman and Nicobar Islands", "Chandigarh", "Dadra and Nagar Haveli and Daman and Diu",
+    "Delhi", "Jammu and Kashmir", "Ladakh", "Lakshadweep", "Puducherry",
+]
+
+def split_multi(val): return [x.strip() for x in str(val).split(",") if x.strip()]
+def colnum_to_letter(n):
+    letters = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
 # ---------------------------------------------------------
 # 🧹 SMART DATA CLEANER (Translates Gujarati to English & Normalizes Time)
 # ---------------------------------------------------------
@@ -180,40 +226,6 @@ def load_kpi_data():
         return pd.DataFrame()
 
 df_this_raw = load_kpi_data()
-
-# ==========================================
-# 📅 GLOBAL DATE FILTERS 
-# ==========================================
-st.markdown("<div style='font-size: 14px; font-weight: bold; color: #0A3A6E; margin-bottom: 5px; margin-top: 15px;'>📅 Date Range Filters (Affects Totals & Breakdowns only)</div>", unsafe_allow_html=True)
-d1, d2, d3 = st.columns(3)
-
-if not df_live.empty:
-    for c in ['Diagnosis Date', 'Initiation Date', 'Outcome Date']:
-        if c in df_live.columns:
-            df_live[c + '_dt'] = pd.to_datetime(df_live[c], errors='coerce')
-
-with d1: diag_dates = st.date_input("Spectrum Diagnosis Date", value=[], key="diag_date")
-with d2: init_dates = st.date_input("Treatment Initiation Date", value=[], key="init_date")
-with d3: out_dates = st.date_input("Date of Treatment Outcome", value=[], key="out_date")
-
-df_live_filtered = df_live.copy()
-
-if not df_live_filtered.empty:
-    def filter_by_date(df, col, d_range):
-        if len(d_range) == 2:
-            return df[(df[col].dt.date >= d_range[0]) & (df[col].dt.date <= d_range[1])]
-        elif len(d_range) == 1:
-            return df[df[col].dt.date == d_range[0]]
-        return df
-
-    if 'Diagnosis Date_dt' in df_live_filtered.columns and diag_dates:
-        df_live_filtered = filter_by_date(df_live_filtered, 'Diagnosis Date_dt', diag_dates)
-    if 'Initiation Date_dt' in df_live_filtered.columns and init_dates:
-        df_live_filtered = filter_by_date(df_live_filtered, 'Initiation Date_dt', init_dates)
-    if 'Outcome Date_dt' in df_live_filtered.columns and out_dates:
-        df_live_filtered = filter_by_date(df_live_filtered, 'Outcome Date_dt', out_dates)
-
-total_adverse_count = len(df_live_filtered)
 
 # ---------------------------------------------------------
 # 🧮 CALCULATION ENGINE: YEAR-WISE SUCCESS & DEATH RATES (UNAFFECTED BY DATES)
@@ -279,6 +291,80 @@ if not df_this_raw.empty:
         grp_init = df_calc_diag.groupby('Diag_Year')['Is_Initial_Death'].agg(['sum', 'count'])
         init_death_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_init.iterrows() if pd.notna(y) and r['count'] > 0])
 
+# ==========================================
+# 📊 UI PLACEHOLDERS FOR KPIs (Rendered Later)
+# ==========================================
+st.markdown("""
+<style>
+    .kpi-card-v2 { background: #ffffff; border-radius: 12px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04); border-left: 5px solid #0A3A6E; height: 100%; }
+    .kpi-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
+    .kpi-label-v2 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: #64748b; }
+    .kpi-number-v2 { font-size: 30px; font-weight: 800; color: #0f172a; margin-top: 6px; line-height: 1.1; }
+    .kpi-sub-v2 { font-size: 11.5px; color: #64748b; margin-top: 8px; font-weight: 600; }
+    .kpi-years-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .kpi-year-chip { font-size: 12px; font-weight: 700; color: #0f172a; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px; padding: 3px 8px; }
+
+    .breakdown-card { background: #f8fafc; border-radius: 10px; padding: 14px 16px 16px 16px; border: 1px solid #e2e8f0; height: 100%; max-height: 300px; overflow-y: auto; }
+    .breakdown-title { font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 10px; }
+    .breakdown-row { display: flex; justify-content: space-between; font-size: 12px; color: #475569; margin-top: 8px; }
+    .breakdown-row b { color: #0f172a; }
+    .progress-bg { background: #e2e8f0; border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 4px; }
+    .breakdown-empty { font-size: 12px; color: #94a3b8; font-style: italic; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("<h3 style='color: #0A3A6E; font-weight: 800; margin-top: 5px;'>Executive Summary</h3>", unsafe_allow_html=True)
+kpi_placeholder = st.container()
+
+st.markdown("<div style='height:22px;'></div>", unsafe_allow_html=True)
+st.markdown("<h4 style='color: #334155; font-weight: 700; font-size:16px;'>Detailed Breakdown of Adverse Outcomes</h4>", unsafe_allow_html=True)
+breakdown_placeholder = st.container()
+
+st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_allow_html=True)
+
+# ==========================================
+# 📅 GLOBAL DATE FILTERS & INTERACTIVE LINE LIST
+# ==========================================
+st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Interactive Line List & Field Data Entry</h3>", unsafe_allow_html=True)
+st.markdown("<div style='font-size: 14px; font-weight: bold; color: #0A3A6E; margin-bottom: 5px;'>📅 Global Date Range Filters (Affects Totals & Breakdowns above)</div>", unsafe_allow_html=True)
+
+d1, d2, d3 = st.columns(3)
+
+if not df_live.empty:
+    for c in ['Diagnosis Date', 'Initiation Date', 'Outcome Date']:
+        if c in df_live.columns:
+            df_live[c + '_dt'] = pd.to_datetime(df_live[c], errors='coerce')
+
+with d1: diag_dates = st.date_input("Spectrum Diagnosis Date", value=[], key="diag_date")
+with d2: init_dates = st.date_input("Treatment Initiation Date", value=[], key="init_date")
+with d3: out_dates = st.date_input("Date of Treatment Outcome", value=[], key="out_date")
+
+st.markdown(
+    "<div style='font-size: 14px; margin-bottom:15px; margin-top:15px; color:#555;'>Double-click a cell to edit it, then hit Save. "
+    "If a patient has more than one comorbidity, select <b>Multiple</b> from the dropdown and list them in the <b>Remarks</b> column.</div>",
+    unsafe_allow_html=True
+)
+
+df_live_filtered = df_live.copy()
+
+if not df_live_filtered.empty:
+    def filter_by_date(df, col, d_range):
+        if len(d_range) == 2:
+            return df[(df[col].dt.date >= d_range[0]) & (df[col].dt.date <= d_range[1])]
+        elif len(d_range) == 1:
+            return df[df[col].dt.date == d_range[0]]
+        return df
+
+    if 'Diagnosis Date_dt' in df_live_filtered.columns and diag_dates:
+        df_live_filtered = filter_by_date(df_live_filtered, 'Diagnosis Date_dt', diag_dates)
+    if 'Initiation Date_dt' in df_live_filtered.columns and init_dates:
+        df_live_filtered = filter_by_date(df_live_filtered, 'Initiation Date_dt', init_dates)
+    if 'Outcome Date_dt' in df_live_filtered.columns and out_dates:
+        df_live_filtered = filter_by_date(df_live_filtered, 'Outcome Date_dt', out_dates)
+
+total_adverse_count = len(df_live_filtered)
+
 # ---------------------------------------------------------
 # 🧮 AHMEDABAD RESIDENT COUNT (Filtered by Date)
 # ---------------------------------------------------------
@@ -298,45 +384,7 @@ if total_adverse_count > 0 and 'ZONE' in df_live_filtered.columns:
     ahmedabad_pct_str = f"{int((ahmedabad_count / total_adverse_count) * 100)}%"
 
 # ---------------------------------------------------------
-# 🧮 MORE FIELD OPTIONS
-# ---------------------------------------------------------
-META_ENTRY_COLS = [COL_SUBMITTED_BY, COL_LAST_UPDATED]
-COMORBIDITY_OPTIONS = [
-    "", "Diabetes", "Cardiovascular disease", "Hypertension", "COPD", "Asthama",
-    "Other lung disease", "Chronic liver disease", "Chronic kidney disease", "Cancer",
-    "HIV/AIDS", "Occupational lung disease", "Anaemia", "Mental health disorder",
-    "Autoimmune disorder", "Severe malnutrition", "Congenital disorder",
-    "Chronic alcoholism", "P/H of covid 19", "Sickle cell trait or anaemia",
-    "Other", "Multiple", "NA"
-]
-
-PLACE_OF_DEATH_OPTIONS = [
-    "", "Home", "PHC", "UHC", "CHC", "SDH", "DH", "Medical College", 
-    "Grant in aid hospital", "ESIS Hospital", "ESIC Hospital", 
-    "Other Central GOVT Hospital", "Private Hospital", "Private NGO", 
-    "In transit", "Other", "Not Known"
-]
-
-TRANSFER_REASON_OPTIONS = ["", "Migration for Work", "Family Relocation", "Better Treatment Facility", "Other"]
-INDIAN_STATES_UTS = [
-    "", "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", "Goa", "Gujarat",
-    "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra",
-    "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim",
-    "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal",
-    "Andaman and Nicobar Islands", "Chandigarh", "Dadra and Nagar Haveli and Daman and Diu",
-    "Delhi", "Jammu and Kashmir", "Ladakh", "Lakshadweep", "Puducherry",
-]
-
-def split_multi(val): return [x.strip() for x in str(val).split(",") if x.strip()]
-def colnum_to_letter(n):
-    letters = ""
-    while n > 0:
-        n, rem = divmod(n - 1, 26)
-        letters = chr(65 + rem) + letters
-    return letters
-
-# ---------------------------------------------------------
-# 🧮 BIFURCATED BREAKDOWNS (Comorbidity / Residency / Outcomes)
+# 🧮 BIFURCATED BREAKDOWNS (Filtered by Date)
 # ---------------------------------------------------------
 comorbidity_breakdown = {}
 residency_breakdown = {}
@@ -381,30 +429,8 @@ if not df_live_filtered.empty:
         outcome_breakdown = {k: v for k, v in outcomes_dict.items() if k != ""}
 
 # ==========================================
-# 📊 EXECUTIVE SUMMARY (MOH VIEW) 
+# 📊 POPULATE KPI AND BREAKDOWN PLACEHOLDERS
 # ==========================================
-st.markdown("""
-<style>
-    .kpi-card-v2 { background: #ffffff; border-radius: 12px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04); border-left: 5px solid #0A3A6E; height: 100%; }
-    .kpi-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
-    .kpi-label-v2 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: #64748b; }
-    .kpi-number-v2 { font-size: 30px; font-weight: 800; color: #0f172a; margin-top: 6px; line-height: 1.1; }
-    .kpi-sub-v2 { font-size: 11.5px; color: #64748b; margin-top: 8px; font-weight: 600; }
-    .kpi-years-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-    .kpi-year-chip { font-size: 12px; font-weight: 700; color: #0f172a; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px; padding: 3px 8px; }
-
-    .breakdown-card { background: #f8fafc; border-radius: 10px; padding: 14px 16px 16px 16px; border: 1px solid #e2e8f0; height: 100%; max-height: 300px; overflow-y: auto; }
-    .breakdown-title { font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 10px; }
-    .breakdown-row { display: flex; justify-content: space-between; font-size: 12px; color: #475569; margin-top: 8px; }
-    .breakdown-row b { color: #0f172a; }
-    .progress-bg { background: #e2e8f0; border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden; }
-    .progress-fill { height: 100%; border-radius: 4px; }
-    .breakdown-empty { font-size: 12px; color: #94a3b8; font-style: italic; }
-</style>
-""", unsafe_allow_html=True)
-
-st.markdown("<h3 style='color: #0A3A6E; font-weight: 800; margin-top: 5px;'>Executive Summary</h3>", unsafe_allow_html=True)
-
 def render_kpi_card(label, value, sub="", years_str="", accent="#0A3A6E"):
     sub_html = f"<div class='kpi-sub-v2'>{sub}</div>" if sub else ""
     years_html = ""
@@ -421,34 +447,27 @@ def render_kpi_card(label, value, sub="", years_str="", accent="#0A3A6E"):
     ]
     return "".join(parts)
 
-kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-with kpi1:
-    st.markdown(render_kpi_card("Total Adverse Outcomes", total_adverse_count, sub=f"{entry_completed_count} of {total_adverse_count} entries completed", accent="#0A3A6E"), unsafe_allow_html=True)
-with kpi2:
-    st.markdown(render_kpi_card("Ahmedabad Residents", ahmedabad_pct_str, sub=f"{ahmedabad_count} of {total_adverse_count} records", accent="#2563eb"), unsafe_allow_html=True)
-with kpi3:
-    st.markdown(render_kpi_card("Success Rate", success_overall_str, sub="Among eligible regimens", years_str=success_years_str, accent="#16a34a"), unsafe_allow_html=True)
-with kpi4:
-    st.markdown(render_kpi_card("Initial Death Rate", init_death_overall_str, sub="Died before treatment initiation", years_str=init_death_years_str, accent="#f97316"), unsafe_allow_html=True)
-with kpi5:
-    st.markdown(render_kpi_card("Normal Death Rate", death_overall_str, sub="During treatment", years_str=death_years_str, accent="#dc2626"), unsafe_allow_html=True)
-
-# ---------------------------------------------------------
-# 🔍 DETAILED BIFURCATION
-# ---------------------------------------------------------
-st.markdown("<div style='height:22px;'></div>", unsafe_allow_html=True)
-st.markdown("<h4 style='color: #334155; font-weight: 700; font-size:16px;'>Detailed Breakdown of Adverse Outcomes</h4>", unsafe_allow_html=True)
+with kpi_placeholder:
+    k_col1, k_col2, k_col3, k_col4, k_col5 = st.columns(5)
+    with k_col1:
+        st.markdown(render_kpi_card("Total Adverse Outcomes", total_adverse_count, sub=f"{entry_completed_count} of {total_adverse_count} entries completed", accent="#0A3A6E"), unsafe_allow_html=True)
+    with k_col2:
+        st.markdown(render_kpi_card("Ahmedabad Residents", ahmedabad_pct_str, sub=f"{ahmedabad_count} of {total_adverse_count} records", accent="#2563eb"), unsafe_allow_html=True)
+    with k_col3:
+        st.markdown(render_kpi_card("Success Rate", success_overall_str, sub="Among eligible regimens", years_str=success_years_str, accent="#16a34a"), unsafe_allow_html=True)
+    with k_col4:
+        st.markdown(render_kpi_card("Initial Death Rate", init_death_overall_str, sub="Died before treatment initiation", years_str=init_death_years_str, accent="#f97316"), unsafe_allow_html=True)
+    with k_col5:
+        st.markdown(render_kpi_card("Normal Death Rate", death_overall_str, sub="During treatment", years_str=death_years_str, accent="#dc2626"), unsafe_allow_html=True)
 
 def render_breakdown_card(title, data_dict, total, accent):
     if total > 0 and data_dict:
         row_parts = []
         for label, count in data_dict.items():
             pct = (count / total * 100) if total > 0 else 0
-            
             is_pending = label == "⏳ Data Pending"
             val_color = "#dc2626" if is_pending else "#0f172a"
             bar_color = "#f87171" if is_pending else accent
-            
             row_parts.append(
                 f'<div class="breakdown-row"><span>{label}</span><span style="color:{val_color}; font-weight:700;">{count}&nbsp;({pct:.0f}%)</span></div>'
                 f'<div class="progress-bg"><div class="progress-fill" style="width:{pct:.0f}%; background:{bar_color};"></div></div>'
@@ -463,25 +482,18 @@ def render_breakdown_card(title, data_dict, total, accent):
     )
     return f'<div class="breakdown-card">{title_html}{rows_html}</div>'
 
-b1, b2, b3 = st.columns(3)
-with b1:
-    st.markdown(render_breakdown_card("Comorbidity", comorbidity_breakdown, total_adverse_count, accent="#0891b2"), unsafe_allow_html=True)
-with b2:
-    st.markdown(render_breakdown_card("Ahmedabad Residency (During Treatment)", residency_breakdown, total_adverse_count, accent="#2563eb"), unsafe_allow_html=True)
-with b3:
-    st.markdown(render_breakdown_card("Adverse Outcomes Overview", outcome_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
+with breakdown_placeholder:
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        st.markdown(render_breakdown_card("Comorbidity", comorbidity_breakdown, total_adverse_count, accent="#0891b2"), unsafe_allow_html=True)
+    with b2:
+        st.markdown(render_breakdown_card("Ahmedabad Residency (During Treatment)", residency_breakdown, total_adverse_count, accent="#2563eb"), unsafe_allow_html=True)
+    with b3:
+        st.markdown(render_breakdown_card("Adverse Outcomes Overview", outcome_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
 
-st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_allow_html=True)
 # ==========================================
-# 📝 INLINE SPREADSHEET EDITOR (DIRECT DATA ENTRY)
+# 📝 RENDERING THE DATA EDITOR TABLE
 # ==========================================
-st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Interactive Line List & Field Data Entry</h3>", unsafe_allow_html=True)
-st.markdown(
-    "<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Double-click a cell to edit it, then hit Save. "
-    "If a patient has more than one comorbidity, select <b>Multiple</b> from the dropdown and list them in the <b>Remarks</b> column.</div>",
-    unsafe_allow_html=True
-)
-
 if not df_live_filtered.empty:
     df_display = df_live_filtered.copy()
     
