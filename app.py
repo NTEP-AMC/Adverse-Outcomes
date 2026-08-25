@@ -86,7 +86,7 @@ if not st.session_state.auth:
 # ==========================================
 # 🟢 MAIN APPLICATION & DATABASE CONNECTIONS
 # ==========================================
-st.markdown(f"<div style='background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px; font-weight: bold; margin-bottom: 20px;'>👤 Logged in as: {st.session_state.target} ({st.session_state.role})</div>", unsafe_allow_html=True)
+st.markdown(f"<div style='background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px; font-weight: bold; margin-bottom: 10px;'>👤 Logged in as: {st.session_state.target} ({st.session_state.role})</div>", unsafe_allow_html=True)
 
 @st.cache_resource
 def init_gspread():
@@ -181,8 +181,42 @@ def load_kpi_data():
 
 df_this_raw = load_kpi_data()
 
+# ==========================================
+# 📅 GLOBAL DATE FILTERS 
+# ==========================================
+st.markdown("<div style='font-size: 14px; font-weight: bold; color: #0A3A6E; margin-bottom: 5px; margin-top: 15px;'>📅 Date Range Filters (Affects Totals & Breakdowns only)</div>", unsafe_allow_html=True)
+d1, d2, d3 = st.columns(3)
+
+if not df_live.empty:
+    for c in ['Diagnosis Date', 'Initiation Date', 'Outcome Date']:
+        if c in df_live.columns:
+            df_live[c + '_dt'] = pd.to_datetime(df_live[c], errors='coerce')
+
+with d1: diag_dates = st.date_input("Spectrum Diagnosis Date", value=[], key="diag_date")
+with d2: init_dates = st.date_input("Treatment Initiation Date", value=[], key="init_date")
+with d3: out_dates = st.date_input("Date of Treatment Outcome", value=[], key="out_date")
+
+df_live_filtered = df_live.copy()
+
+if not df_live_filtered.empty:
+    def filter_by_date(df, col, d_range):
+        if len(d_range) == 2:
+            return df[(df[col].dt.date >= d_range[0]) & (df[col].dt.date <= d_range[1])]
+        elif len(d_range) == 1:
+            return df[df[col].dt.date == d_range[0]]
+        return df
+
+    if 'Diagnosis Date_dt' in df_live_filtered.columns and diag_dates:
+        df_live_filtered = filter_by_date(df_live_filtered, 'Diagnosis Date_dt', diag_dates)
+    if 'Initiation Date_dt' in df_live_filtered.columns and init_dates:
+        df_live_filtered = filter_by_date(df_live_filtered, 'Initiation Date_dt', init_dates)
+    if 'Outcome Date_dt' in df_live_filtered.columns and out_dates:
+        df_live_filtered = filter_by_date(df_live_filtered, 'Outcome Date_dt', out_dates)
+
+total_adverse_count = len(df_live_filtered)
+
 # ---------------------------------------------------------
-# 🧮 CALCULATION ENGINE: YEAR-WISE SUCCESS & DEATH RATES
+# 🧮 CALCULATION ENGINE: YEAR-WISE SUCCESS & DEATH RATES (UNAFFECTED BY DATES)
 # ---------------------------------------------------------
 success_overall_str, success_years_str = "0%", ""
 death_overall_str, death_years_str = "0%", ""
@@ -208,20 +242,20 @@ if not df_this_raw.empty:
     regimen_series = get_col_series(df_this_raw, ['TYPE OF TB REGIMEN'], 'BJ').fillna("").astype(str).str.upper()
     outcome_series = get_col_series(df_this_raw, ['TREATMENT OUTCOME'], 'BK').fillna("").astype(str).str.upper().str.strip()
     
-    diag_series = get_col_series(df_this_raw, ['DIAGNOSIS DATE'], 'S').fillna("").astype(str).str.strip()
-    init_series = get_col_series(df_this_raw, ['INITIATION DATE'], 'BM').fillna("").astype(str).str.strip()
-    out_date_series = get_col_series(df_this_raw, ['OUTCOME DATE'], 'CB').fillna("").astype(str).str.strip()
+    diag_series_raw = get_col_series(df_this_raw, ['DIAGNOSIS DATE'], 'S').fillna("").astype(str).str.strip()
+    init_series_raw = get_col_series(df_this_raw, ['INITIATION DATE'], 'BM').fillna("").astype(str).str.strip()
+    out_date_series_raw = get_col_series(df_this_raw, ['OUTCOME DATE'], 'CB').fillna("").astype(str).str.strip()
 
     df_calc = pd.DataFrame({
         'Valid': ~ep_series.isin(["", "NAN", "NONE", "NULL", "N/A"]),
         'Regimen_Eligible': regimen_series.str.contains("2HRZE/4HRE|2HRZES|4HRE|2HRZE", regex=True, na=False),
         'Is_Success': outcome_series.str.contains("COMPLETE|CURED", regex=True, na=False),
         'Is_Death': outcome_series.str.contains("DIED|DEATH", regex=True, na=False),
-        'Init_Year': pd.to_datetime(init_series, errors='coerce').dt.year,
-        'Diag_Year': pd.to_datetime(diag_series, errors='coerce').dt.year,
-        'Has_Diag': diag_series != "",
-        'Has_OutDate': out_date_series != "",
-        'No_Init': init_series == ""
+        'Init_Year': pd.to_datetime(init_series_raw, errors='coerce').dt.year,
+        'Diag_Year': pd.to_datetime(diag_series_raw, errors='coerce').dt.year,
+        'Has_Diag': diag_series_raw != "",
+        'Has_OutDate': out_date_series_raw != "",
+        'No_Init': init_series_raw == ""
     })
 
     df_calc_init = df_calc[df_calc['Valid'] & df_calc['Regimen_Eligible']].copy()
@@ -245,18 +279,16 @@ if not df_this_raw.empty:
         grp_init = df_calc_diag.groupby('Diag_Year')['Is_Initial_Death'].agg(['sum', 'count'])
         init_death_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_init.iterrows() if pd.notna(y) and r['count'] > 0])
 
-total_adverse_count = len(df_live)
-
 # ---------------------------------------------------------
-# 🧮 AHMEDABAD RESIDENT COUNT (used by KPI + breakdown card)
+# 🧮 AHMEDABAD RESIDENT COUNT (Filtered by Date)
 # ---------------------------------------------------------
 ahmedabad_count = 0
 ahmedabad_pct_str = "0%"
-if total_adverse_count > 0 and 'ZONE' in df_live.columns:
-    zone_mask = df_live['ZONE'].astype(str).str.upper().str.contains("AHMEDABAD|EAST|WEST|NORTH|SOUTH|CENTRAL|AMC", regex=True, na=False)
+if total_adverse_count > 0 and 'ZONE' in df_live_filtered.columns:
+    zone_mask = df_live_filtered['ZONE'].astype(str).str.upper().str.contains("AHMEDABAD|EAST|WEST|NORTH|SOUTH|CENTRAL|AMC", regex=True, na=False)
     
-    if COL_MONTHS_RESIDING in df_live.columns:
-        months_series = pd.to_numeric(df_live[COL_MONTHS_RESIDING], errors='coerce')
+    if COL_MONTHS_RESIDING in df_live_filtered.columns:
+        months_series = pd.to_numeric(df_live_filtered[COL_MONTHS_RESIDING], errors='coerce')
         months_valid_mask = (months_series >= 6) | (months_series.isna())
         ahmedabad_mask = zone_mask & months_valid_mask
     else:
@@ -311,10 +343,9 @@ residency_breakdown = {}
 outcome_breakdown = {}
 entry_completed_count = 0
 
-if not df_live.empty:
-    # Residency Breakdown with Missing Data Tracker
-    if COL_RESIDED_THROUGHOUT in df_live.columns:
-        resided_series = df_live[COL_RESIDED_THROUGHOUT].fillna("").astype(str).str.strip().str.upper()
+if not df_live_filtered.empty:
+    if COL_RESIDED_THROUGHOUT in df_live_filtered.columns:
+        resided_series = df_live_filtered[COL_RESIDED_THROUGHOUT].fillna("").astype(str).str.strip().str.upper()
         entry_completed_count = int((resided_series != "").sum())
         pending_count = total_adverse_count - entry_completed_count
         
@@ -325,12 +356,11 @@ if not df_live.empty:
         if pending_count > 0:
             residency_breakdown["⏳ Data Pending"] = pending_count
 
-    # Comorbidity Breakdown with Missing Data Tracker
-    if COL_COMORBIDITY in df_live.columns:
+    if COL_COMORBIDITY in df_live_filtered.columns:
         comorb_counts = {label: 0 for label in COMORBIDITY_OPTIONS if label != ""}
         comorb_pending_count = 0
         
-        for val in df_live[COL_COMORBIDITY].fillna(""):
+        for val in df_live_filtered[COL_COMORBIDITY].fillna(""):
             val_str = str(val).strip()
             if not val_str:
                 comorb_pending_count += 1
@@ -345,14 +375,13 @@ if not df_live.empty:
         if comorb_pending_count > 0:
             comorbidity_breakdown["⏳ Data Pending"] = comorb_pending_count
 
-    # New Adverse Outcomes Breakdown (Replaces Transfer & Reject)
-    if 'Treatment Outcome' in df_live.columns:
-        outcomes_series = df_live['Treatment Outcome'].fillna("").astype(str).str.strip().str.upper()
+    if 'Treatment Outcome' in df_live_filtered.columns:
+        outcomes_series = df_live_filtered['Treatment Outcome'].fillna("").astype(str).str.strip().str.upper()
         outcomes_dict = outcomes_series.value_counts().to_dict()
         outcome_breakdown = {k: v for k, v in outcomes_dict.items() if k != ""}
 
 # ==========================================
-# 📊 EXECUTIVE SUMMARY (MOH VIEW) — REDESIGNED
+# 📊 EXECUTIVE SUMMARY (MOH VIEW) 
 # ==========================================
 st.markdown("""
 <style>
@@ -374,7 +403,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Executive Summary</h3>", unsafe_allow_html=True)
+st.markdown("<h3 style='color: #0A3A6E; font-weight: 800; margin-top: 5px;'>Executive Summary</h3>", unsafe_allow_html=True)
 
 def render_kpi_card(label, value, sub="", years_str="", accent="#0A3A6E"):
     sub_html = f"<div class='kpi-sub-v2'>{sub}</div>" if sub else ""
@@ -416,7 +445,6 @@ def render_breakdown_card(title, data_dict, total, accent):
         for label, count in data_dict.items():
             pct = (count / total * 100) if total > 0 else 0
             
-            # Change styling slightly if it's the pending data row
             is_pending = label == "⏳ Data Pending"
             val_color = "#dc2626" if is_pending else "#0f172a"
             bar_color = "#f87171" if is_pending else accent
@@ -454,8 +482,11 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-if not df_live.empty:
-    df_display = df_live.copy()
+if not df_live_filtered.empty:
+    df_display = df_live_filtered.copy()
+    
+    # Drop parsing datetime columns for safe display and download 
+    df_display = df_display.drop(columns=[c for c in df_display.columns if c.endswith('_dt')], errors='ignore')
 
     missing_cols = [c for c in REQUIRED_ENTRY_COLS if c not in df_display.columns]
     if missing_cols:
