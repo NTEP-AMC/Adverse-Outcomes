@@ -201,19 +201,15 @@ def parse_indian_dates(series):
     def fix_date_string(x):
         if pd.isna(x) or x in ['nan', 'NaN', 'None', '<NA>', '']: return pd.NA
         x = str(x).strip()
-        # Normalizes formats like "Jul-26" -> "01-Jul-2026"
         if re.match(r'^[A-Za-z]{3}[-/]\d{2}$', x):
             return f"01-{x[:3]}-20{x[-2:]}"
-        # Normalizes formats like "Jul-2026" -> "01-Jul-2026"
         if re.match(r'^[A-Za-z]{3}[-/]\d{4}$', x):
             return f"01-{x[:3]}-{x[-4:]}"
         return x
     
     s = series.apply(fix_date_string)
-    # First pass: Force Day-First interpretation for Indian formats (DD/MM/YYYY)
     parsed = pd.to_datetime(s, dayfirst=True, errors='coerce')
     failed = parsed.isna() & s.notna()
-    # Second pass: Pick up any remainder American formats
     if failed.any():
         parsed[failed] = pd.to_datetime(s[failed], errors='coerce')
     return parsed
@@ -414,33 +410,58 @@ if not df_live_filtered.empty:
 # ==========================================
 # 📊 POPULATE KPI AND BREAKDOWN PLACEHOLDERS
 # ==========================================
-def render_kpi_card(label, value, sub="", years_str="", accent="#0A3A6E"):
-    sub_html = f"<div class='kpi-sub-v2'>{sub}</div>" if sub else ""
+st.markdown("""
+<style>
+    .kpi-card { background-color: #0A3A6E; color: white; padding: 18px 10px; border-radius: 8px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center;}
+    .kpi-title { font-size: 12px; text-transform: uppercase; font-weight: 700; opacity: 0.9; }
+    .kpi-value { font-size: 28px; font-weight: 900; margin-top: 5px; }
+    .kpi-sub { font-size: 11px; color: rgba(255,255,255,0.8); margin-top: 8px; font-weight: 600; }
+    .kpi-years-wrap { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; margin-top: 8px; }
+    .kpi-year-chip { font-size: 11px; font-weight: 700; color: #000; background: #fff; border-radius: 4px; padding: 2px 6px; }
+
+    .breakdown-card { background: #f8fafc; border-radius: 10px; padding: 14px 16px 16px 16px; border: 1px solid #e2e8f0; height: 100%; max-height: 300px; overflow-y: auto; }
+    .breakdown-title { font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 10px; }
+    .breakdown-row { display: flex; justify-content: space-between; font-size: 12px; color: #475569; margin-top: 8px; }
+    .breakdown-row b { color: #0f172a; }
+    .progress-bg { background: #e2e8f0; border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden; }
+    .progress-fill { height: 100%; border-radius: 4px; }
+    .breakdown-empty { font-size: 12px; color: #94a3b8; font-style: italic; }
+</style>
+""", unsafe_allow_html=True)
+
+kpi_placeholder = st.container()
+
+st.markdown("<div style='height:22px;'></div>", unsafe_allow_html=True)
+st.markdown("<h4 style='color: #334155; font-weight: 700; font-size:16px;'>Detailed Breakdown of Adverse Outcomes</h4>", unsafe_allow_html=True)
+breakdown_placeholder = st.container()
+
+def render_kpi_card(label, value, sub="", years_str="", bg_color="#0A3A6E"):
+    sub_html = f"<div class='kpi-sub'>{sub}</div>" if sub else ""
     years_html = ""
     if years_str:
         chips = "".join([f"<span class='kpi-year-chip'>{part.strip()}</span>" for part in years_str.split("|")])
         years_html = f"<div class='kpi-years-wrap'>{chips}</div>"
-    parts = [
-        f'<div class="kpi-card-v2" style="border-left-color:{accent};">',
-        f'<span class="kpi-dot" style="background:{accent};"></span><span class="kpi-label-v2">{label}</span>',
-        f'<div class="kpi-number-v2">{value}</div>',
-        sub_html,
-        years_html,
-        '</div>',
-    ]
-    return "".join(parts)
+    return f"""
+    <div class="kpi-card" style="background-color: {bg_color};">
+        <div class="kpi-title">{label}</div>
+        <div class="kpi-value">{value}</div>
+        {sub_html}
+        {years_html}
+    </div>
+    """
 
-k_col1, k_col2, k_col3, k_col4, k_col5 = st.columns(5)
-with k_col1:
-    st.markdown(render_kpi_card("Total Adverse Outcomes", total_adverse_count, sub=f"{entry_completed_count} of {total_adverse_count} entries completed", accent="#0A3A6E"), unsafe_allow_html=True)
-with k_col2:
-    st.markdown(render_kpi_card("Ahmedabad Residents", ahmedabad_pct_str, sub=f"{ahmedabad_count} of {total_adverse_count} records", accent="#2563eb"), unsafe_allow_html=True)
-with k_col3:
-    st.markdown(render_kpi_card("Success Rate", success_overall_str, sub="Among eligible regimens", years_str=success_years_str, accent="#16a34a"), unsafe_allow_html=True)
-with k_col4:
-    st.markdown(render_kpi_card("Initial Death Rate", init_death_overall_str, sub="Died before treatment initiation", years_str=init_death_years_str, accent="#f97316"), unsafe_allow_html=True)
-with k_col5:
-    st.markdown(render_kpi_card("Normal Death Rate", death_overall_str, sub="During treatment", years_str=death_years_str, accent="#dc2626"), unsafe_allow_html=True)
+with kpi_placeholder:
+    k_col1, k_col2, k_col3, k_col4, k_col5 = st.columns(5)
+    with k_col1:
+        st.markdown(render_kpi_card("Total Adverse Outcomes", total_adverse_count, sub=f"{entry_completed_count} of {total_adverse_count} entries completed", bg_color="#0A3A6E"), unsafe_allow_html=True)
+    with k_col2:
+        st.markdown(render_kpi_card("Ahmedabad Residents", ahmedabad_pct_str, sub=f"{ahmedabad_count} of {total_adverse_count} records", bg_color="#1d4ed8"), unsafe_allow_html=True)
+    with k_col3:
+        st.markdown(render_kpi_card("Success Rate", success_overall_str, sub="Among eligible regimens", years_str=success_years_str, bg_color="#16a34a"), unsafe_allow_html=True)
+    with k_col4:
+        st.markdown(render_kpi_card("Initial Death Rate", init_death_overall_str, sub="Died before treatment initiation", years_str=init_death_years_str, bg_color="#f97316"), unsafe_allow_html=True)
+    with k_col5:
+        st.markdown(render_kpi_card("Normal Death Rate", death_overall_str, sub="During treatment", years_str=death_years_str, bg_color="#dc2626"), unsafe_allow_html=True)
 
 def render_breakdown_card(title, data_dict, total, accent):
     if total > 0 and data_dict:
@@ -457,23 +478,25 @@ def render_breakdown_card(title, data_dict, total, accent):
         rows_html = "".join(row_parts)
     else:
         rows_html = "<div class='breakdown-empty'>No entries recorded yet</div>"
-    title_html = (
-        f'<div class="breakdown-title">'
-        f'<span class="kpi-dot" style="background:{accent};"></span>{title}'
-        f'&nbsp;<span style="color:#94a3b8; font-weight:500;">(out of {total})</span></div>'
-    )
-    return f'<div class="breakdown-card">{title_html}{rows_html}</div>'
+    
+    return f"""
+    <div class="breakdown-card">
+        <div class="breakdown-title">
+            <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:{accent}; margin-right:6px;"></span>
+            {title}&nbsp;<span style="color:#94a3b8; font-weight:500;">(out of {total})</span>
+        </div>
+        {rows_html}
+    </div>
+    """
 
-st.markdown("<div style='height:22px;'></div>", unsafe_allow_html=True)
-st.markdown("<h4 style='color: #334155; font-weight: 700; font-size:16px;'>Detailed Breakdown of Adverse Outcomes</h4>", unsafe_allow_html=True)
-
-b1, b2, b3 = st.columns(3)
-with b1:
-    st.markdown(render_breakdown_card("Comorbidity", comorbidity_breakdown, total_adverse_count, accent="#0891b2"), unsafe_allow_html=True)
-with b2:
-    st.markdown(render_breakdown_card("Ahmedabad Residency (During Treatment)", residency_breakdown, total_adverse_count, accent="#2563eb"), unsafe_allow_html=True)
-with b3:
-    st.markdown(render_breakdown_card("Adverse Outcomes Overview", outcome_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
+with breakdown_placeholder:
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        st.markdown(render_breakdown_card("Comorbidity", comorbidity_breakdown, total_adverse_count, accent="#0891b2"), unsafe_allow_html=True)
+    with b2:
+        st.markdown(render_breakdown_card("Ahmedabad Residency (During Treatment)", residency_breakdown, total_adverse_count, accent="#2563eb"), unsafe_allow_html=True)
+    with b3:
+        st.markdown(render_breakdown_card("Adverse Outcomes Overview", outcome_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
 
 st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_allow_html=True)
 
@@ -481,16 +504,10 @@ st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_al
 # 📝 RENDERING THE DATA EDITOR TABLE
 # ==========================================
 st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Interactive Line List & Field Data Entry</h3>", unsafe_allow_html=True)
-st.markdown(
-    "<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Double-click a cell to edit it, then hit Save. "
-    "If a patient has more than one comorbidity, select <b>Multiple</b> from the dropdown and list them in the <b>Remarks</b> column.</div>",
-    unsafe_allow_html=True
-)
 
 if not df_live_filtered.empty:
     df_display = df_live_filtered.copy()
     
-    # Drop parsing datetime columns for safe display and download 
     df_display = df_display.drop(columns=[c for c in df_display.columns if c.endswith('_dt')], errors='ignore')
 
     missing_cols = [c for c in REQUIRED_ENTRY_COLS if c not in df_display.columns]
