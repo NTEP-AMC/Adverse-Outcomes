@@ -89,7 +89,6 @@ if not st.session_state.auth:
 # ==========================================
 st.markdown(f"<div style='background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px; font-weight: bold; margin-bottom: 20px;'>👤 Logged in as: {st.session_state.target} ({st.session_state.role})</div>", unsafe_allow_html=True)
 
-# 1. Connect to Google Sheets via Service Account (For Writing Data)
 @st.cache_resource
 def init_gspread():
     creds_dict = json.loads(st.secrets["google_credentials"])
@@ -108,13 +107,11 @@ except Exception as e:
     new_sheet = None
     submitted_ids = []
 
-# 2. Fetch Data from Master & This Week Tabs
 BASE_OUTCOME_URL = "https://docs.google.com/spreadsheets/d/1Dfvl87uaZZ12_5F4dhHXTP_u8i9NM9TASWN8wyX18nE/export?format=csv&gid="
 
 @st.cache_data(ttl=600, show_spinner="Fetching latest registers and calculating metrics...")
 def load_all_registers():
     import urllib.request
-    
     def get_sheet_df(gid):
         try:
             url = BASE_OUTCOME_URL + gid
@@ -125,19 +122,16 @@ def load_all_registers():
         except:
             return pd.DataFrame()
 
-    df_m = get_sheet_df("1027512112") # MASTER tab
-    df_t = get_sheet_df("1898426568") # THIS WEEK tab
-    df_p = get_sheet_df("1981365704") # PREVIOUS WEEK tab
-
-    return df_m, df_t, df_p
+    return get_sheet_df("1027512112"), get_sheet_df("1898426568"), get_sheet_df("1981365704")
 
 df_master_raw, df_this_raw, df_prev_raw = load_all_registers()
 
 # ---------------------------------------------------------
-# 🧮 CALCULATION ENGINE: SUCCESS RATE & DEATH RATE
+# 🧮 CALCULATION ENGINE: YEAR-WISE SUCCESS & DEATH RATES
 # ---------------------------------------------------------
-success_rate_str = "0%"
-death_rate_str = "0%"
+success_overall_str, success_years_str = "0%", ""
+death_overall_str, death_years_str = "0%", ""
+init_death_overall_str, init_death_years_str = "0%", ""
 
 if not df_this_raw.empty:
     def cx(col_letter):
@@ -150,39 +144,66 @@ if not df_this_raw.empty:
             p_clean = re.sub(r'[^A-Z0-9]', '', str(p).upper())
             for c in df.columns:
                 c_clean = re.sub(r'[^A-Z0-9]', '', str(c).upper())
-                if c_clean == p_clean:
-                    return df[c]
+                if c_clean == p_clean: return df[c]
         idx = cx(fallback_col_letter)
-        if idx < len(df.columns):
-            return df.iloc[:, idx]
+        if idx < len(df.columns): return df.iloc[:, idx]
         return pd.Series([""] * len(df))
 
-    ep_series = get_col_series(df_this_raw, ['EPISODE ID', 'NTEP ID', 'ID'], 'M').fillna("").astype(str).str.strip()
-    regimen_series = get_col_series(df_this_raw, ['TYPE OF TB REGIMEN', 'REGIMEN', 'TYPE_OF_TB_REGIMEN', 'REGIME'], 'BJ').fillna("").astype(str).str.upper()
-    outcome_series = get_col_series(df_this_raw, ['TREATMENT OUTCOME', 'OUTCOME'], 'BK').fillna("").astype(str).str.upper().str.strip()
+    ep_series = get_col_series(df_this_raw, ['EPISODE ID'], 'M').fillna("").astype(str).str.strip()
+    regimen_series = get_col_series(df_this_raw, ['TYPE OF TB REGIMEN'], 'BJ').fillna("").astype(str).str.upper()
+    outcome_series = get_col_series(df_this_raw, ['TREATMENT OUTCOME'], 'BK').fillna("").astype(str).str.upper().str.strip()
+    
+    # Date Columns for Year Parsing
+    diag_series = get_col_series(df_this_raw, ['DIAGNOSIS DATE'], 'S').fillna("").astype(str).str.strip()
+    init_series = get_col_series(df_this_raw, ['INITIATION DATE'], 'BM').fillna("").astype(str).str.strip()
+    out_date_series = get_col_series(df_this_raw, ['OUTCOME DATE'], 'CB').fillna("").astype(str).str.strip()
 
-    valid_mask = ~ep_series.isin(["", "NAN", "NONE", "NULL", "N/A"])
-    total_patients = valid_mask.sum()
+    # Build calculation dataframe
+    df_calc = pd.DataFrame({
+        'Valid': ~ep_series.isin(["", "NAN", "NONE", "NULL", "N/A"]),
+        'Regimen_Eligible': regimen_series.str.contains("2HRZE/4HRE|2HRZES|4HRE|2HRZE", regex=True, na=False),
+        'Is_Success': outcome_series.str.contains("COMPLETE|CURED", regex=True, na=False),
+        'Is_Death': outcome_series.str.contains("DIED|DEATH", regex=True, na=False),
+        'Init_Year': pd.to_datetime(init_series, errors='coerce').dt.year,
+        'Diag_Year': pd.to_datetime(diag_series, errors='coerce').dt.year,
+        'Has_Diag': diag_series != "",
+        'Has_OutDate': out_date_series != "",
+        'No_Init': init_series == ""
+    })
 
-    if total_patients > 0:
-        regimen_mask = regimen_series.str.contains("2HRZE/4HRE|2HRZES|4HRE|2HRZE", regex=True, na=False)
+    # --- 1. Success & Normal Death (Based on Initiation Year) ---
+    df_calc_init = df_calc[df_calc['Valid'] & df_calc['Regimen_Eligible']].copy()
+    total_eligible = len(df_calc_init)
+    
+    if total_eligible > 0:
+        # Overall
+        success_overall_str = f"{(df_calc_init['Is_Success'].sum() / total_eligible * 100):.1f}%"
+        death_overall_str = f"{(df_calc_init['Is_Death'].sum() / total_eligible * 100):.1f}%"
         
-        # Success Rate: Eligible Regimen AND Outcome in [TREATMENT_COMPLETE, CURED]
-        success_mask = valid_mask & regimen_mask & outcome_series.str.contains("COMPLETE|CURED", regex=True, na=False)
-        success_count = success_mask.sum()
-        success_pct = (success_count / total_patients) * 100
-        success_rate_str = f"{success_pct:.1f}%"
+        # Year-wise
+        grp_succ = df_calc_init.groupby('Init_Year')['Is_Success'].agg(['sum', 'count'])
+        grp_death = df_calc_init.groupby('Init_Year')['Is_Death'].agg(['sum', 'count'])
+        
+        success_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_succ.iterrows() if pd.notna(y) and r['count'] > 0])
+        death_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_death.iterrows() if pd.notna(y) and r['count'] > 0])
 
-        # Death Rate: Eligible Regimen AND Outcome == DIED
-        death_mask = valid_mask & regimen_mask & outcome_series.str.contains("DIED|DEATH", regex=True, na=False)
-        death_count = death_mask.sum()
-        death_pct = (death_count / total_patients) * 100
-        death_rate_str = f"{death_pct:.1f}%"
+    # --- 2. Initial Death Rate (Based on Diagnosis Year) ---
+    # Condition: Diag present, OutDate present, Init is blank, Outcome is DIED
+    df_calc_diag = df_calc[df_calc['Valid']].copy()
+    df_calc_diag['Is_Initial_Death'] = df_calc_diag['Has_Diag'] & df_calc_diag['Has_OutDate'] & df_calc_diag['No_Init'] & df_calc_diag['Is_Death']
+    
+    total_diag = len(df_calc_diag)
+    if total_diag > 0:
+        init_death_overall_str = f"{(df_calc_diag['Is_Initial_Death'].sum() / total_diag * 100):.1f}%"
+        grp_init = df_calc_diag.groupby('Diag_Year')['Is_Initial_Death'].agg(['sum', 'count'])
+        init_death_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_init.iterrows() if pd.notna(y) and r['count'] > 0])
 
 # ---------------------------------------------------------
 # ⚙️ MASTER DATA FORMATTING & MERGING
 # ---------------------------------------------------------
 df_combined_master = df_master_raw.copy()
+total_adverse_count = 0
+ahmedabad_pct_str = "0%"
 
 if not df_combined_master.empty:
     rename_map = {}
@@ -201,48 +222,47 @@ if not df_combined_master.empty:
         elif c_clean in ['DIAGNOSISDATE']: rename_map[col] = 'Diagnosis Date'
         elif c_clean in ['INITIATIONDATE']: rename_map[col] = 'Initiation Date'
         elif c_clean in ['OUTCOMEDATE']: rename_map[col] = 'Outcome Date'
+        # 🆕 New Columns Added
+        elif c_clean in ['PRIMARYPHONE', 'PHONE', 'MOBILENO']: rename_map[col] = 'Primary Phone'
+        elif c_clean in ['SPECTRUMDIAGNOSINGPHI', 'DIAGNOSINGPHI']: rename_map[col] = 'Diagnosing PHI'
 
     df_combined_master = df_combined_master.rename(columns=rename_map)
+    total_adverse_count = len(df_combined_master)
 
-total_adverse_count = len(df_combined_master)
+    if total_adverse_count > 0 and 'ZONE' in df_combined_master.columns:
+        ahmedabad_mask = df_combined_master['ZONE'].astype(str).str.upper().str.contains("AHMEDABAD|EAST|WEST|NORTH|SOUTH|CENTRAL|AMC", regex=True, na=False)
+        ahmedabad_pct_str = f"{int((ahmedabad_mask.sum() / total_adverse_count) * 100)}%"
 
-# Calculate Ahmedabad Residents %
-ahmedabad_pct_str = "0%"
-if total_adverse_count > 0 and 'ZONE' in df_combined_master.columns:
-    ahmedabad_mask = df_combined_master['ZONE'].astype(str).str.upper().str.contains("AHMEDABAD|EAST|WEST|NORTH|SOUTH|CENTRAL|AMC", regex=True, na=False)
-    ahmedabad_pct = (ahmedabad_mask.sum() / total_adverse_count) * 100
-    ahmedabad_pct_str = f"{int(ahmedabad_pct)}%"
-
-# Filter by role
-if st.session_state.role in ["TB_UNIT", "TU"] and 'TB Unit' in df_combined_master.columns:
-    staff_tu = st.session_state.target.strip().upper()
-    df_combined_master = df_combined_master[df_combined_master['TB Unit'].astype(str).str.upper().str.contains(staff_tu, na=False)]
-elif st.session_state.role == "ZONE" and 'ZONE' in df_combined_master.columns:
-    staff_z = st.session_state.target.replace("ZONE", "").strip().upper()
-    df_combined_master = df_combined_master[df_combined_master['ZONE'].astype(str).str.upper().str.contains(staff_z, na=False)]
+    if st.session_state.role in ["TB_UNIT", "TU"] and 'TB Unit' in df_combined_master.columns:
+        df_combined_master = df_combined_master[df_combined_master['TB Unit'].astype(str).str.upper().str.contains(st.session_state.target.strip().upper(), na=False)]
+    elif st.session_state.role == "ZONE" and 'ZONE' in df_combined_master.columns:
+        df_combined_master = df_combined_master[df_combined_master['ZONE'].astype(str).str.upper().str.contains(st.session_state.target.replace("ZONE", "").strip().upper(), na=False)]
 
 # ==========================================
 # 📊 EXECUTIVE SUMMARY (MOH VIEW)
 # ==========================================
 st.markdown("""
 <style>
-    .kpi-card { background-color: #0A3A6E; color: white; padding: 18px 10px; border-radius: 8px; text-align: center; }
-    .kpi-title { font-size: 12px; text-transform: uppercase; font-weight: 700; opacity: 0.9; }
-    .kpi-value { font-size: 28px; font-weight: 900; margin-top: 5px; }
+    .kpi-card { background-color: #0A3A6E; color: white; padding: 18px 10px; border-radius: 8px; text-align: center; height: 100%; display: flex; flex-direction: column; justify-content: center;}
+    .kpi-title { font-size: 11px; text-transform: uppercase; font-weight: 700; opacity: 0.9; }
+    .kpi-value { font-size: 26px; font-weight: 900; margin-top: 5px; }
+    .kpi-sub { font-size: 10px; color: #cbd5e1; margin-top: 8px; font-weight: 600; }
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>📊 Executive Summary</h3>", unsafe_allow_html=True)
-kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
 with kpi1:
     st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Total Adverse Outcomes</div><div class='kpi-value'>{total_adverse_count}</div></div>", unsafe_allow_html=True)
 with kpi2:
     st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Ahmedabad Residents</div><div class='kpi-value'>{ahmedabad_pct_str}</div></div>", unsafe_allow_html=True)
 with kpi3:
-    st.markdown(f"<div class='kpi-card' style='background-color: #16a34a;'><div class='kpi-title'>Success Rate</div><div class='kpi-value'>{success_rate_str}</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='kpi-card' style='background-color: #16a34a;'><div class='kpi-title'>Success Rate</div><div class='kpi-value'>{success_overall_str}</div><div class='kpi-sub'>{success_years_str}</div></div>", unsafe_allow_html=True)
 with kpi4:
-    st.markdown(f"<div class='kpi-card' style='background-color: #dc2626;'><div class='kpi-title'>Death Rate</div><div class='kpi-value'>{death_rate_str}</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='kpi-card' style='background-color: #f97316;'><div class='kpi-title'>Initial Death Rate</div><div class='kpi-value'>{init_death_overall_str}</div><div class='kpi-sub'>{init_death_years_str}</div></div>", unsafe_allow_html=True)
+with kpi5:
+    st.markdown(f"<div class='kpi-card' style='background-color: #dc2626;'><div class='kpi-title'>Normal Death Rate</div><div class='kpi-value'>{death_overall_str}</div><div class='kpi-sub'>{death_years_str}</div></div>", unsafe_allow_html=True)
 
 st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_allow_html=True)
 
@@ -257,7 +277,6 @@ if search_id:
     if search_id in submitted_ids:
         st.error(f"⛔ Data for Episode ID **{search_id}** has already been submitted. Duplicate entries are not allowed.")
     else:
-        # Check in Master or This Week
         patient_match = pd.DataFrame()
         if not df_combined_master.empty and 'Episode ID' in df_combined_master.columns:
             patient_match = df_combined_master[df_combined_master['Episode ID'].astype(str).str.strip().str.upper() == search_id]
@@ -270,7 +289,6 @@ if search_id:
             p_tu = str(p_row.get('TB Unit', 'Unknown')).strip().upper()
             p_out = str(p_row.get('Treatment Outcome', 'N/A')).strip().upper()
 
-            # TB Unit authorization check
             if st.session_state.role in ["TB_UNIT", "TU"]:
                 staff_tu = st.session_state.target.strip().upper()
                 if staff_tu not in p_tu:
@@ -333,7 +351,8 @@ if not df_combined_master.empty:
     if sel_zone and 'ZONE' in df_display.columns: df_display = df_display[df_display['ZONE'].isin(sel_zone)]
     if sel_per and 'ADVERSE DATE' in df_display.columns: df_display = df_display[df_display['ADVERSE DATE'].isin(sel_per)]
 
-    master_cols = ['ADVERSE DATE', 'ZONE', 'TB Unit', 'PHI', 'Facility Type', 'Patient Name', 'Episode ID', 'Age', 'Type_of_TB_regimen', 'Diagnosis Date', 'Initiation Date', 'Outcome Date', 'Treatment Outcome', 'On Treatment Days']
+    # 🆕 Updated master columns list to include the new fields
+    master_cols = ['ADVERSE DATE', 'ZONE', 'TB Unit', 'Diagnosing PHI', 'PHI', 'Facility Type', 'Patient Name', 'Primary Phone', 'Episode ID', 'Age', 'Type_of_TB_regimen', 'Diagnosis Date', 'Initiation Date', 'Outcome Date', 'Treatment Outcome', 'On Treatment Days']
     cols_to_show = [c for c in master_cols if c in df_display.columns]
     
     st.dataframe(df_display[cols_to_show] if cols_to_show else df_display, width="stretch", hide_index=True)
