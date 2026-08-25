@@ -10,27 +10,33 @@ import pytz
 import gspread
 from google.oauth2.service_account import Credentials
 import warnings
+
 warnings.filterwarnings("ignore")
+
 # ==========================================
 # ⚙️ PAGE CONFIG & AUTHENTICATION SETUP
 # ==========================================
 st.set_page_config(page_title="AMC NTEP - Adverse Outcomes", layout="wide", initial_sidebar_state="collapsed")
 india_tz = pytz.timezone('Asia/Kolkata')
+
 def img_to_b64(img_path):
     try:
         with open(img_path, "rb") as img_file: return base64.b64encode(img_file.read()).decode('utf-8')
     except: return ""
+
 if "auth" not in st.session_state: 
     st.session_state.auth = False
     st.session_state.current_user = ""
     st.session_state.role = ""
     st.session_state.target = ""
+
 try:
     df_users = pd.read_csv("users.csv")
     df_users['Username'] = df_users['Username'].astype(str).str.strip().str.upper()
 except:
     st.error("⚠️ User Database (users.csv) not found in the repository!")
     st.stop()
+
 # ==========================================
 # 🔐 ENTERPRISE LOGIN PAGE
 # ==========================================
@@ -76,30 +82,37 @@ if not st.session_state.auth:
                 else: 
                     st.error("⚠️ Invalid User ID or Password")
     st.stop()
+
 # ==========================================
 # 🟢 MAIN APPLICATION & DATABASE CONNECTIONS
 # ==========================================
 st.markdown(f"<div style='background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px; font-weight: bold; margin-bottom: 20px;'>👤 Logged in as: {st.session_state.target} ({st.session_state.role})</div>", unsafe_allow_html=True)
+
 @st.cache_resource
 def init_gspread():
     creds_dict = json.loads(st.secrets["google_credentials"])
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
+
 client = init_gspread()
 NEW_SHEET_URL = "https://docs.google.com/spreadsheets/d/11JHb7Zv4KqV_PAY9REGBVdkLwqBSubvgtSrr1ulGRzA/edit"
+
 try:
     new_sheet = client.open_by_url(NEW_SHEET_URL).sheet1
 except Exception as e:
     st.error("Could not connect to the New Google Sheet. Check credentials.")
     st.stop()
+
 @st.cache_data(ttl=10, show_spinner="Syncing Live Data Tracker...")
 def get_live_tracker():
     try:
         return pd.DataFrame(new_sheet.get_all_records())
     except:
         return pd.DataFrame()
+
 df_live = get_live_tracker()
+
 @st.cache_data(ttl=600, show_spinner="Calculating Executive Metrics...")
 def load_kpi_data():
     import urllib.request
@@ -110,18 +123,22 @@ def load_kpi_data():
             return pd.read_csv(io.BytesIO(response.read()), low_memory=False, dtype=str, on_bad_lines='skip')
     except:
         return pd.DataFrame()
+
 df_this_raw = load_kpi_data()
+
 # ---------------------------------------------------------
 # 🧮 CALCULATION ENGINE: YEAR-WISE SUCCESS & DEATH RATES
 # ---------------------------------------------------------
 success_overall_str, success_years_str = "0%", ""
 death_overall_str, death_years_str = "0%", ""
 init_death_overall_str, init_death_years_str = "0%", ""
+
 if not df_this_raw.empty:
     def cx(col_letter):
         num = 0
         for c in col_letter.upper(): num = num * 26 + (ord(c) - ord('A') + 1)
         return num - 1
+
     def get_col_series(df, possible_names, fallback_col_letter):
         for p in possible_names:
             p_clean = re.sub(r'[^A-Z0-9]', '', str(p).upper())
@@ -131,6 +148,7 @@ if not df_this_raw.empty:
         idx = cx(fallback_col_letter)
         if idx < len(df.columns): return df.iloc[:, idx]
         return pd.Series([""] * len(df))
+
     ep_series = get_col_series(df_this_raw, ['EPISODE ID'], 'M').fillna("").astype(str).str.strip()
     regimen_series = get_col_series(df_this_raw, ['TYPE OF TB REGIMEN'], 'BJ').fillna("").astype(str).str.upper()
     outcome_series = get_col_series(df_this_raw, ['TREATMENT OUTCOME'], 'BK').fillna("").astype(str).str.upper().str.strip()
@@ -138,6 +156,7 @@ if not df_this_raw.empty:
     diag_series = get_col_series(df_this_raw, ['DIAGNOSIS DATE'], 'S').fillna("").astype(str).str.strip()
     init_series = get_col_series(df_this_raw, ['INITIATION DATE'], 'BM').fillna("").astype(str).str.strip()
     out_date_series = get_col_series(df_this_raw, ['OUTCOME DATE'], 'CB').fillna("").astype(str).str.strip()
+
     df_calc = pd.DataFrame({
         'Valid': ~ep_series.isin(["", "NAN", "NONE", "NULL", "N/A"]),
         'Regimen_Eligible': regimen_series.str.contains("2HRZE/4HRE|2HRZES|4HRE|2HRZE", regex=True, na=False),
@@ -149,6 +168,7 @@ if not df_this_raw.empty:
         'Has_OutDate': out_date_series != "",
         'No_Init': init_series == ""
     })
+
     df_calc_init = df_calc[df_calc['Valid'] & df_calc['Regimen_Eligible']].copy()
     total_eligible = len(df_calc_init)
     
@@ -160,6 +180,7 @@ if not df_this_raw.empty:
         grp_death = df_calc_init.groupby('Init_Year')['Is_Death'].agg(['sum', 'count'])
         success_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_succ.iterrows() if pd.notna(y) and r['count'] > 0])
         death_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_death.iterrows() if pd.notna(y) and r['count'] > 0])
+
     df_calc_diag = df_calc[df_calc['Valid']].copy()
     df_calc_diag['Is_Initial_Death'] = df_calc_diag['Has_Diag'] & df_calc_diag['Has_OutDate'] & df_calc_diag['No_Init'] & df_calc_diag['Is_Death']
     
@@ -392,7 +413,6 @@ with b2:
 with b3:
     st.markdown(render_breakdown_card("Transfer & Rejection Overview", transfer_reject_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
 
-
 st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_allow_html=True)
 # ==========================================
 # 📝 INLINE SPREADSHEET EDITOR (DIRECT DATA ENTRY)
@@ -400,8 +420,7 @@ st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_al
 st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Interactive Line List & Field Data Entry</h3>", unsafe_allow_html=True)
 st.markdown(
     "<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Double-click a cell to edit it, then hit Save. "
-    "<b>Comorbidity</b> is view-only here — since a patient can have more than one condition (e.g. both HIV and Diabetes), "
-    "edit it using the <b>Comorbidity (Multi-Select) Entry</b> form further below.</div>",
+    "For the <b>Comorbidity</b> column, type in the multiple conditions separated by commas (e.g. Diabetes, HIV/AIDS).</div>",
     unsafe_allow_html=True
 )
 
@@ -430,6 +449,7 @@ if not df_live.empty:
         df_display = df_display[df_display['TB Unit'].astype(str).str.upper().str.contains(st.session_state.target.strip().upper(), na=False)]
     elif st.session_state.role == "ZONE":
         df_display = df_display[df_display['ZONE'].astype(str).str.upper().str.contains(st.session_state.target.replace("ZONE", "").strip().upper(), na=False)]
+    
     # 2. Top Bar Filters
     f1, f2, f3 = st.columns(3)
     with f1:
@@ -440,6 +460,7 @@ if not df_live.empty:
         sel_zone = st.multiselect("Filter by Zone", opts_zone)
     with f3:
         entry_status = st.selectbox("Data Entry Status", ["All", "Pending Entry", "Completed"])
+    
     if sel_out and 'Treatment Outcome' in df_display.columns: df_display = df_display[df_display['Treatment Outcome'].isin(sel_out)]
     if sel_zone and 'ZONE' in df_display.columns: df_display = df_display[df_display['ZONE'].isin(sel_zone)]
 
@@ -447,13 +468,14 @@ if not df_live.empty:
         df_display = df_display[df_display[COL_RESIDED_THROUGHOUT].str.strip() == ""]
     elif entry_status == "Completed":
         df_display = df_display[df_display[COL_RESIDED_THROUGHOUT].str.strip() != ""]
+    
     # 🚨 CRITICAL: reset the index so Streamlit's editor maps perfectly to our filtered dataframe
     df_display = df_display.reset_index(drop=True)
 
-    # 3. Configure the Interactive Table — everything editable EXCEPT Comorbidity (view-only, real
-    #    multi-value edits happen in the dedicated form below) and historical/locked columns.
-    editable_cols = [c for c in REQUIRED_ENTRY_COLS if c != COL_COMORBIDITY]
+    # 3. Configure the Interactive Table — everything editable including Comorbidity
+    editable_cols = [c for c in REQUIRED_ENTRY_COLS]
     locked_cols = [col for col in df_display.columns if col not in editable_cols]
+    
     column_configuration = {
         COL_MONTHS_RESIDING: st.column_config.NumberColumn(COL_MONTHS_RESIDING, min_value=0, step=1, format="%d"),
         COL_RESIDED_THROUGHOUT: st.column_config.SelectboxColumn(COL_RESIDED_THROUGHOUT, options=["", "YES", "NO"]),
@@ -462,7 +484,7 @@ if not df_live.empty:
             help="Only applicable when Treatment Outcome is Died"
         ),
         COL_COMORBIDITY: st.column_config.TextColumn(
-            COL_COMORBIDITY, help="View only — edit using the Comorbidity (Multi-Select) form below"
+            COL_COMORBIDITY, help="Type comorbidities separated by commas (e.g. Diabetes, HIV/AIDS)"
         ),
         COL_STATE_NON_AMC: st.column_config.SelectboxColumn(COL_STATE_NON_AMC, options=INDIAN_STATES_UTS),
         COL_DISTRICT_NON_AMC: st.column_config.TextColumn(COL_DISTRICT_NON_AMC),
@@ -471,6 +493,7 @@ if not df_live.empty:
         COL_REJECT_DATE: st.column_config.DateColumn(COL_REJECT_DATE, format="DD-MMM-YYYY", help="Only applicable when the record is Rejected"),
         COL_REMARKS: st.column_config.TextColumn(COL_REMARKS),
     }
+    
     # Render the interactive Data Editor
     edited_df = st.data_editor(
         df_display,
@@ -545,63 +568,5 @@ if not df_live.empty:
                 get_live_tracker.clear()  # Clears cache to fetch fresh data
                 st.rerun()
 
-    # ==========================================
-    # 🧷 COMORBIDITY (MULTI-SELECT) ENTRY
-    # ==========================================
-    st.markdown("<hr style='border: 1px solid #e2e8f0; margin: 30px 0 20px 0;'>", unsafe_allow_html=True)
-    st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Comorbidity (Multi-Select) Entry</h3>", unsafe_allow_html=True)
-    st.markdown(
-        "<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Streamlit's table can't do a checkbox-style "
-        "multi-select inside one cell (unlike Google Sheets), so use this form instead when a patient has "
-        "<b>more than one</b> comorbidity — for example both <b>HIV/AIDS</b> and <b>Diabetes</b>. Pick the Episode ID, "
-        "tick every condition that applies, and save. This updates the same row shown in the table above.</div>",
-        unsafe_allow_html=True
-    )
-
-    if 'Episode ID' in df_display.columns and len(df_display) > 0:
-        ep_options = df_display['Episode ID'].astype(str).tolist()
-        sel_ep = st.selectbox("Select Episode ID", ep_options, key="multi_entry_ep")
-
-        sel_row = df_display[df_display['Episode ID'].astype(str) == str(sel_ep)]
-        if not sel_row.empty:
-            sel_row = sel_row.iloc[0]
-            existing_comorbidity = split_multi(sel_row.get(COL_COMORBIDITY, ""))
-
-            sel_comorbidity = st.multiselect(
-                "Comorbidity (select all that apply)", COMORBIDITY_OPTIONS,
-                default=[c for c in existing_comorbidity if c in COMORBIDITY_OPTIONS],
-                key="multi_entry_comorbidity"
-            )
-
-            if st.button("💾 Save Comorbidity Entry", type="primary", use_container_width=True, key="multi_entry_save"):
-                with st.spinner("Writing updates securely to Google Sheets..."):
-                    try:
-                        sheet_headers = new_sheet.row_values(1)
-                        header_to_col = {h: i + 1 for i, h in enumerate(sheet_headers) if h}
-                        episode_id_col = header_to_col.get('Episode ID', 8)
-                        cell = new_sheet.find(str(sel_ep), in_column=episode_id_col)
-
-                        field_values = {
-                            COL_COMORBIDITY: ", ".join(sel_comorbidity),
-                            COL_SUBMITTED_BY: st.session_state.current_user,
-                            COL_LAST_UPDATED: datetime.now(india_tz).strftime("%d-%b-%Y %H:%M:%S"),
-                        }
-                        updates = []
-                        for col, val in field_values.items():
-                            col_idx = header_to_col.get(col)
-                            if not col_idx:
-                                continue
-                            letter = colnum_to_letter(col_idx)
-                            updates.append({"range": f"{letter}{cell.row}", "values": [[val]]})
-                        if updates:
-                            new_sheet.batch_update(updates)
-
-                        st.success(f"✅ Episode ID {sel_ep} updated successfully!")
-                        get_live_tracker.clear()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"❌ Failed to update Episode ID {sel_ep}. Ensure the ID exists in the Episode ID column. Error: {e}")
-    else:
-        st.info("ℹ️ No Episode IDs available for the current filter.")
 else:
     st.info("ℹ️ No records found in the New Sheet.")
