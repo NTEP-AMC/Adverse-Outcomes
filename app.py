@@ -113,6 +113,65 @@ def get_live_tracker():
 
 df_live = get_live_tracker()
 
+# ---------------------------------------------------------
+# 🧮 FIELD DATA COLUMN CONSTANTS 
+# ---------------------------------------------------------
+COL_MONTHS_RESIDING     = "Months Residing in Ahmedabad (as of Outcome)"
+COL_RESIDED_THROUGHOUT  = "Resided in Ahmedabad Throughout Treatment"
+COL_PLACE_OF_DEATH      = "Place of Death"
+COL_COMORBIDITY         = "Comorbidity"
+COL_STATE_NON_AMC       = "State (If Non-AMC)"
+COL_DISTRICT_NON_AMC    = "District (If Non-AMC)"
+COL_TRANSFER_REASON     = "Transfer Reason (If Non-AMC)"
+COL_TRANSFER_OUT_DATE   = "Transfer Out Date"
+COL_REJECT_DATE         = "Reject Date (If Rejected)"
+COL_REMARKS             = "Remarks"
+COL_SUBMITTED_BY        = "Submitted By"
+COL_LAST_UPDATED        = "Last Updated"
+
+REQUIRED_ENTRY_COLS = [
+    COL_MONTHS_RESIDING, COL_RESIDED_THROUGHOUT, COL_PLACE_OF_DEATH, COL_COMORBIDITY,
+    COL_STATE_NON_AMC, COL_DISTRICT_NON_AMC, COL_TRANSFER_REASON,
+    COL_TRANSFER_OUT_DATE, COL_REJECT_DATE, COL_REMARKS,
+]
+
+# ---------------------------------------------------------
+# 🧹 SMART DATA CLEANER (Translates Gujarati to English & Normalizes Time)
+# ---------------------------------------------------------
+def parse_gujarati_time(val):
+    if pd.isna(val): return pd.NA
+    val_str = str(val).strip().lower()
+    if not val_str or val_str == 'nan': return pd.NA
+
+    # Translate Gujarati Numerals to English Numerals
+    guj_digits = str.maketrans('૦૧૨૩૪૫૬૭૮૯', '0123456789')
+    val_str = val_str.translate(guj_digits)
+
+    # Extract standard float numbers
+    nums = re.findall(r'\d+\.?\d*', val_str)
+    if not nums: return pd.NA
+    num = float(nums[0])
+
+    # Convert to months if year keywords are detected
+    if any(k in val_str for k in ['year', 'yr', 'વર્ષ', 'સાલ', 'varsh', 'sal']):
+        return int(num * 12)
+    else:
+        return int(num)
+
+def clean_resided(val):
+    if pd.isna(val): return ""
+    val_str = str(val).strip().upper()
+    if val_str in ['હા', 'HA', 'YES']: return 'YES'
+    if val_str in ['ના', 'NA', 'NO']: return 'NO'
+    return val_str
+
+# Apply the cleaners immediately to df_live
+if not df_live.empty:
+    if COL_MONTHS_RESIDING in df_live.columns:
+        df_live[COL_MONTHS_RESIDING] = df_live[COL_MONTHS_RESIDING].apply(parse_gujarati_time)
+    if COL_RESIDED_THROUGHOUT in df_live.columns:
+        df_live[COL_RESIDED_THROUGHOUT] = df_live[COL_RESIDED_THROUGHOUT].apply(clean_resided)
+
 @st.cache_data(ttl=600, show_spinner="Calculating Executive Metrics...")
 def load_kpi_data():
     import urllib.request
@@ -198,34 +257,23 @@ total_adverse_count = len(df_live)
 ahmedabad_count = 0
 ahmedabad_pct_str = "0%"
 if total_adverse_count > 0 and 'ZONE' in df_live.columns:
-    ahmedabad_mask = df_live['ZONE'].astype(str).str.upper().str.contains("AHMEDABAD|EAST|WEST|NORTH|SOUTH|CENTRAL|AMC", regex=True, na=False)
+    zone_mask = df_live['ZONE'].astype(str).str.upper().str.contains("AHMEDABAD|EAST|WEST|NORTH|SOUTH|CENTRAL|AMC", regex=True, na=False)
+    
+    # NEW RULE: If Months Residing is less than 6, they are stripped of residency status. (If blank, we keep them).
+    if COL_MONTHS_RESIDING in df_live.columns:
+        months_series = pd.to_numeric(df_live[COL_MONTHS_RESIDING], errors='coerce')
+        months_valid_mask = (months_series >= 6) | (months_series.isna())
+        ahmedabad_mask = zone_mask & months_valid_mask
+    else:
+        ahmedabad_mask = zone_mask
+
     ahmedabad_count = int(ahmedabad_mask.sum())
     ahmedabad_pct_str = f"{int((ahmedabad_count / total_adverse_count) * 100)}%"
 
 # ---------------------------------------------------------
-# 🧮 REAL FIELD DATA-ENTRY COLUMNS (English headers)
-# These must exist as column headers in your Google Sheet.
+# 🧮 MORE FIELD OPTIONS
 # ---------------------------------------------------------
-COL_MONTHS_RESIDING     = "Months Residing in Ahmedabad (as of Outcome)"
-COL_RESIDED_THROUGHOUT  = "Resided in Ahmedabad Throughout Treatment"
-COL_PLACE_OF_DEATH      = "Place of Death"
-COL_COMORBIDITY         = "Comorbidity"
-COL_STATE_NON_AMC       = "State (If Non-AMC)"
-COL_DISTRICT_NON_AMC    = "District (If Non-AMC)"
-COL_TRANSFER_REASON     = "Transfer Reason (If Non-AMC)"
-COL_TRANSFER_OUT_DATE   = "Transfer Out Date"
-COL_REJECT_DATE         = "Reject Date (If Rejected)"
-COL_REMARKS             = "Remarks"
-COL_SUBMITTED_BY        = "Submitted By"
-COL_LAST_UPDATED        = "Last Updated"
-
-REQUIRED_ENTRY_COLS = [
-    COL_MONTHS_RESIDING, COL_RESIDED_THROUGHOUT, COL_PLACE_OF_DEATH, COL_COMORBIDITY,
-    COL_STATE_NON_AMC, COL_DISTRICT_NON_AMC, COL_TRANSFER_REASON,
-    COL_TRANSFER_OUT_DATE, COL_REJECT_DATE, COL_REMARKS,
-]
 META_ENTRY_COLS = [COL_SUBMITTED_BY, COL_LAST_UPDATED]
-
 COMORBIDITY_OPTIONS = [
     "Diabetes", "Cardiovascular disease", "Hypertension", "COPD", "Asthma",
     "Other lung disease", "Chronic liver disease", "Chronic kidney disease", "Cancer",
@@ -245,9 +293,7 @@ INDIAN_STATES_UTS = [
     "Delhi", "Jammu and Kashmir", "Ladakh", "Lakshadweep", "Puducherry",
 ]
 
-def split_multi(val):
-    return [x.strip() for x in str(val).split(",") if x.strip()]
-
+def split_multi(val): return [x.strip() for x in str(val).split(",") if x.strip()]
 def colnum_to_letter(n):
     letters = ""
     while n > 0:
@@ -297,39 +343,15 @@ if not df_live.empty:
 # ==========================================
 st.markdown("""
 <style>
-    /* ---- Primary KPI cards: flat, white, accent-bordered ---- */
-    .kpi-card-v2 {
-        background: #ffffff;
-        border-radius: 12px;
-        padding: 18px 20px;
-        box-shadow: 0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04);
-        border-left: 5px solid #0A3A6E;
-        height: 100%;
-    }
+    .kpi-card-v2 { background: #ffffff; border-radius: 12px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(15,23,42,0.06), 0 1px 2px rgba(15,23,42,0.04); border-left: 5px solid #0A3A6E; height: 100%; }
     .kpi-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
-    .kpi-label-v2 {
-        font-size: 11px; font-weight: 700; text-transform: uppercase;
-        letter-spacing: 0.4px; color: #64748b;
-    }
+    .kpi-label-v2 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: #64748b; }
     .kpi-number-v2 { font-size: 30px; font-weight: 800; color: #0f172a; margin-top: 6px; line-height: 1.1; }
     .kpi-sub-v2 { font-size: 11.5px; color: #64748b; margin-top: 8px; font-weight: 600; }
     .kpi-years-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-    .kpi-year-chip {
-        font-size: 12px; font-weight: 700; color: #0f172a;
-        background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
-        padding: 3px 8px;
-    }
+    .kpi-year-chip { font-size: 12px; font-weight: 700; color: #0f172a; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px; padding: 3px 8px; }
 
-    /* ---- Secondary breakdown cards ---- */
-    .breakdown-card {
-        background: #f8fafc;
-        border-radius: 10px;
-        padding: 14px 16px 16px 16px;
-        border: 1px solid #e2e8f0;
-        height: 100%;
-        max-height: 300px;
-        overflow-y: auto;
-    }
+    .breakdown-card { background: #f8fafc; border-radius: 10px; padding: 14px 16px 16px 16px; border: 1px solid #e2e8f0; height: 100%; max-height: 300px; overflow-y: auto; }
     .breakdown-title { font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 10px; }
     .breakdown-row { display: flex; justify-content: space-between; font-size: 12px; color: #475569; margin-top: 8px; }
     .breakdown-row b { color: #0f172a; }
@@ -359,28 +381,18 @@ def render_kpi_card(label, value, sub="", years_str="", accent="#0A3A6E"):
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 with kpi1:
-    st.markdown(render_kpi_card("Total Adverse Outcomes", total_adverse_count,
-                                 sub=f"{entry_completed_count} of {total_adverse_count} entries completed",
-                                 accent="#0A3A6E"), unsafe_allow_html=True)
+    st.markdown(render_kpi_card("Total Adverse Outcomes", total_adverse_count, sub=f"{entry_completed_count} of {total_adverse_count} entries completed", accent="#0A3A6E"), unsafe_allow_html=True)
 with kpi2:
-    st.markdown(render_kpi_card("Ahmedabad Residents", ahmedabad_pct_str,
-                                 sub=f"{ahmedabad_count} of {total_adverse_count} records",
-                                 accent="#2563eb"), unsafe_allow_html=True)
+    st.markdown(render_kpi_card("Ahmedabad Residents", ahmedabad_pct_str, sub=f"{ahmedabad_count} of {total_adverse_count} records", accent="#2563eb"), unsafe_allow_html=True)
 with kpi3:
-    st.markdown(render_kpi_card("Success Rate", success_overall_str,
-                                 sub="Among eligible regimens", years_str=success_years_str,
-                                 accent="#16a34a"), unsafe_allow_html=True)
+    st.markdown(render_kpi_card("Success Rate", success_overall_str, sub="Among eligible regimens", years_str=success_years_str, accent="#16a34a"), unsafe_allow_html=True)
 with kpi4:
-    st.markdown(render_kpi_card("Initial Death Rate", init_death_overall_str,
-                                 sub="Died before treatment initiation", years_str=init_death_years_str,
-                                 accent="#f97316"), unsafe_allow_html=True)
+    st.markdown(render_kpi_card("Initial Death Rate", init_death_overall_str, sub="Died before treatment initiation", years_str=init_death_years_str, accent="#f97316"), unsafe_allow_html=True)
 with kpi5:
-    st.markdown(render_kpi_card("Normal Death Rate", death_overall_str,
-                                 sub="During treatment", years_str=death_years_str,
-                                 accent="#dc2626"), unsafe_allow_html=True)
+    st.markdown(render_kpi_card("Normal Death Rate", death_overall_str, sub="During treatment", years_str=death_years_str, accent="#dc2626"), unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 🔍 DETAILED BIFURCATION (Addiction / Comorbidity / Migration)
+# 🔍 DETAILED BIFURCATION
 # ---------------------------------------------------------
 st.markdown("<div style='height:22px;'></div>", unsafe_allow_html=True)
 st.markdown("<h4 style='color: #334155; font-weight: 700; font-size:16px;'>Detailed Breakdown of Adverse Outcomes</h4>", unsafe_allow_html=True)
@@ -427,30 +439,25 @@ st.markdown(
 if not df_live.empty:
     df_display = df_live.copy()
 
-    # Check the Google Sheet actually has all the required real columns (English headers)
     missing_cols = [c for c in REQUIRED_ENTRY_COLS if c not in df_display.columns]
     if missing_cols:
         st.error("⚠️ Setup Required: your Google Sheet is missing these column headers. Add them exactly as written, in row 1:")
         st.markdown("<div style='font-size:13px; color:#64748b;'>" + "<br>".join([f"• {c}" for c in missing_cols]) + "</div>", unsafe_allow_html=True)
         st.stop()
 
-    # Text/selectbox columns: plain strings with no NaN
     TEXT_LIKE_COLS = [c for c in REQUIRED_ENTRY_COLS if c not in (COL_MONTHS_RESIDING, COL_TRANSFER_OUT_DATE, COL_REJECT_DATE)]
     for col in TEXT_LIKE_COLS:
         df_display[col] = df_display[col].fillna("").astype(str)
-    # Numeric column needs an actual numeric dtype for the NumberColumn editor
+    
     df_display[COL_MONTHS_RESIDING] = pd.to_numeric(df_display[COL_MONTHS_RESIDING], errors='coerce')
-    # Date columns need an actual datetime dtype for the DateColumn editor (blank/unparseable -> NaT, shown as empty)
     df_display[COL_TRANSFER_OUT_DATE] = pd.to_datetime(df_display[COL_TRANSFER_OUT_DATE], errors='coerce', dayfirst=True)
     df_display[COL_REJECT_DATE] = pd.to_datetime(df_display[COL_REJECT_DATE], errors='coerce', dayfirst=True)
 
-    # 1. Role-Based Filtering
     if st.session_state.role in ["TB_UNIT", "TU"]:
         df_display = df_display[df_display['TB Unit'].astype(str).str.upper().str.contains(st.session_state.target.strip().upper(), na=False)]
     elif st.session_state.role == "ZONE":
         df_display = df_display[df_display['ZONE'].astype(str).str.upper().str.contains(st.session_state.target.replace("ZONE", "").strip().upper(), na=False)]
     
-    # 2. Top Bar Filters
     f1, f2, f3 = st.columns(3)
     with f1:
         opts_out = sorted([x for x in df_display['Treatment Outcome'].unique() if str(x).strip() != ""]) if 'Treatment Outcome' in df_display.columns else []
@@ -469,10 +476,8 @@ if not df_live.empty:
     elif entry_status == "Completed":
         df_display = df_display[df_display[COL_RESIDED_THROUGHOUT].str.strip() != ""]
     
-    # 🚨 CRITICAL: reset the index so Streamlit's editor maps perfectly to our filtered dataframe
     df_display = df_display.reset_index(drop=True)
 
-    # 3. Configure the Interactive Table — everything editable including Comorbidity
     editable_cols = [c for c in REQUIRED_ENTRY_COLS]
     locked_cols = [col for col in df_display.columns if col not in editable_cols]
     
@@ -494,7 +499,6 @@ if not df_live.empty:
         COL_REMARKS: st.column_config.TextColumn(COL_REMARKS),
     }
     
-    # Render the interactive Data Editor
     edited_df = st.data_editor(
         df_display,
         use_container_width=True,
@@ -504,8 +508,6 @@ if not df_live.empty:
         key="master_data_editor"
     )
 
-    # 4. Save Changes Engine — looks up real column letters by header name, so it works
-    #    regardless of where these columns actually sit in your sheet.
     if "master_data_editor" in st.session_state and st.session_state["master_data_editor"]["edited_rows"]:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("💾 Save All Changes to Master Database", type="primary", use_container_width=True):
@@ -531,8 +533,7 @@ if not df_live.empty:
                         def val_for(col):
                             v = changes.get(col, current_row.get(col, ""))
                             try:
-                                if pd.isna(v):
-                                    return ""
+                                if pd.isna(v): return ""
                             except (TypeError, ValueError):
                                 pass
                             if hasattr(v, "strftime"):
@@ -543,7 +544,6 @@ if not df_live.empty:
                         field_values[COL_SUBMITTED_BY] = st.session_state.current_user
                         field_values[COL_LAST_UPDATED] = datetime.now(india_tz).strftime("%d-%b-%Y %H:%M:%S")
 
-                        # Soft validation — conditional fields
                         if field_values.get(COL_PLACE_OF_DEATH, "") and "DIED" not in outcome_val and "DEATH" not in outcome_val:
                             warnings_list.append(f"Episode {ep_id}: Place of Death was filled but Treatment Outcome isn't Died.")
                         if field_values.get(COL_REJECT_DATE, "") and "REJECT" not in outcome_val:
@@ -552,8 +552,7 @@ if not df_live.empty:
                         updates = []
                         for col, val in field_values.items():
                             col_idx = header_to_col.get(col)
-                            if not col_idx:
-                                continue
+                            if not col_idx: continue
                             letter = colnum_to_letter(col_idx)
                             updates.append({"range": f"{letter}{cell.row}", "values": [[val]]})
                         if updates:
@@ -565,7 +564,7 @@ if not df_live.empty:
                 st.success("✅ All field data successfully saved to the Master Sheet!")
                 for w in warnings_list:
                     st.warning(f"⚠️ {w}")
-                get_live_tracker.clear()  # Clears cache to fetch fresh data
+                get_live_tracker.clear()  
                 st.rerun()
 
 else:
