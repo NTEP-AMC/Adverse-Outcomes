@@ -415,11 +415,15 @@ if not df_live.empty:
         st.markdown("<div style='font-size:13px; color:#64748b;'>" + "<br>".join([f"• {c}" for c in missing_cols]) + "</div>", unsafe_allow_html=True)
         st.stop()
 
-    # Ensure no NaN values for clean text editing
-    for col in REQUIRED_ENTRY_COLS:
+    # Text/selectbox columns: plain strings with no NaN
+    TEXT_LIKE_COLS = [c for c in REQUIRED_ENTRY_COLS if c not in (COL_MONTHS_RESIDING, COL_TRANSFER_OUT_DATE, COL_REJECT_DATE)]
+    for col in TEXT_LIKE_COLS:
         df_display[col] = df_display[col].fillna("").astype(str)
-    # Numeric column needs to actually be numeric for the NumberColumn editor
+    # Numeric column needs an actual numeric dtype for the NumberColumn editor
     df_display[COL_MONTHS_RESIDING] = pd.to_numeric(df_display[COL_MONTHS_RESIDING], errors='coerce')
+    # Date columns need an actual datetime dtype for the DateColumn editor (blank/unparseable -> NaT, shown as empty)
+    df_display[COL_TRANSFER_OUT_DATE] = pd.to_datetime(df_display[COL_TRANSFER_OUT_DATE], errors='coerce', dayfirst=True)
+    df_display[COL_REJECT_DATE] = pd.to_datetime(df_display[COL_REJECT_DATE], errors='coerce', dayfirst=True)
 
     # 1. Role-Based Filtering
     if st.session_state.role in ["TB_UNIT", "TU"]:
@@ -503,9 +507,14 @@ if not df_live.empty:
 
                         def val_for(col):
                             v = changes.get(col, current_row.get(col, ""))
-                            if isinstance(v, (pd.Timestamp,)) or hasattr(v, "strftime"):
-                                return v.strftime("%d-%b-%Y") if v else ""
-                            return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+                            try:
+                                if pd.isna(v):
+                                    return ""
+                            except (TypeError, ValueError):
+                                pass
+                            if hasattr(v, "strftime"):
+                                return v.strftime("%d-%b-%Y")
+                            return str(v)
 
                         field_values = {col: val_for(col) for col in editable_cols}
                         field_values[COL_SUBMITTED_BY] = st.session_state.current_user
