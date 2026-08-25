@@ -199,7 +199,7 @@ if not df_live.empty:
             "Alcohol":  int(addic_series.str.contains("Alcohol", case=False, na=False).sum()),
             "Tobacco":  int(addic_series.str.contains("Tobacco", case=False, na=False).sum()),
             "Multiple": int(addic_series.str.contains("Multiple", case=False, na=False).sum()),
-            "None":     int(addic_series.str.contains(r"^NO(\s|-|$)", case=False, na=False, regex=True).sum()),
+            "None":     int(addic_series.str.contains(r"^NO(\s|-|$)|^None$", case=False, na=False, regex=True).sum()),
         }
     if 'Comorbidity' in df_live.columns:
         comorb_series = df_live['Comorbidity'].fillna("").astype(str)
@@ -231,14 +231,19 @@ st.markdown("""
         border-left: 5px solid #0A3A6E;
         height: 100%;
     }
-    .kpi-icon-v2 { font-size: 20px; opacity: 0.85; }
+    .kpi-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle; }
     .kpi-label-v2 {
         font-size: 11px; font-weight: 700; text-transform: uppercase;
-        letter-spacing: 0.4px; color: #64748b; margin-top: 8px;
+        letter-spacing: 0.4px; color: #64748b;
     }
-    .kpi-number-v2 { font-size: 30px; font-weight: 800; color: #0f172a; margin-top: 2px; line-height: 1.1; }
+    .kpi-number-v2 { font-size: 30px; font-weight: 800; color: #0f172a; margin-top: 6px; line-height: 1.1; }
     .kpi-sub-v2 { font-size: 11.5px; color: #64748b; margin-top: 8px; font-weight: 600; }
-    .kpi-years-v2 { font-size: 10px; color: #94a3b8; margin-top: 4px; font-weight: 500; }
+    .kpi-years-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .kpi-year-chip {
+        font-size: 12px; font-weight: 700; color: #0f172a;
+        background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 6px;
+        padding: 3px 8px;
+    }
 
     /* ---- Secondary breakdown cards ---- */
     .breakdown-card {
@@ -248,7 +253,7 @@ st.markdown("""
         border: 1px solid #e2e8f0;
         height: 100%;
     }
-    .breakdown-title { font-size: 12.5px; font-weight: 700; color: #334155; margin-bottom: 10px; }
+    .breakdown-title { font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 10px; }
     .breakdown-row { display: flex; justify-content: space-between; font-size: 12px; color: #475569; margin-top: 8px; }
     .breakdown-row b { color: #0f172a; }
     .progress-bg { background: #e2e8f0; border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden; }
@@ -257,84 +262,86 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>📊 Executive Summary</h3>", unsafe_allow_html=True)
+st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Executive Summary</h3>", unsafe_allow_html=True)
 
-def render_kpi_card(icon, label, value, sub="", years="", accent="#0A3A6E"):
+def render_kpi_card(label, value, sub="", years_str="", accent="#0A3A6E"):
     sub_html = f"<div class='kpi-sub-v2'>{sub}</div>" if sub else ""
-    years_html = f"<div class='kpi-years-v2'>{years}</div>" if years else ""
-    return f"""
-    <div class="kpi-card-v2" style="border-left-color:{accent};">
-        <div class="kpi-icon-v2">{icon}</div>
-        <div class="kpi-label-v2">{label}</div>
-        <div class="kpi-number-v2">{value}</div>
-        {sub_html}
-        {years_html}
-    </div>
-    """
+    years_html = ""
+    if years_str:
+        chips = "".join([f"<span class='kpi-year-chip'>{part.strip()}</span>" for part in years_str.split("|")])
+        years_html = f"<div class='kpi-years-wrap'>{chips}</div>"
+    parts = [
+        f'<div class="kpi-card-v2" style="border-left-color:{accent};">',
+        f'<span class="kpi-dot" style="background:{accent};"></span><span class="kpi-label-v2">{label}</span>',
+        f'<div class="kpi-number-v2">{value}</div>',
+        sub_html,
+        years_html,
+        '</div>',
+    ]
+    return "".join(parts)
 
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 with kpi1:
-    st.markdown(render_kpi_card("🧾", "Total Adverse Outcomes", total_adverse_count,
+    st.markdown(render_kpi_card("Total Adverse Outcomes", total_adverse_count,
                                  sub=f"{entry_completed_count} of {total_adverse_count} entries completed",
                                  accent="#0A3A6E"), unsafe_allow_html=True)
 with kpi2:
-    st.markdown(render_kpi_card("🏙️", "Ahmedabad Residents", ahmedabad_pct_str,
+    st.markdown(render_kpi_card("Ahmedabad Residents", ahmedabad_pct_str,
                                  sub=f"{ahmedabad_count} of {total_adverse_count} records",
                                  accent="#2563eb"), unsafe_allow_html=True)
 with kpi3:
-    st.markdown(render_kpi_card("✅", "Success Rate", success_overall_str,
-                                 sub="Among eligible regimens", years=success_years_str,
+    st.markdown(render_kpi_card("Success Rate", success_overall_str,
+                                 sub="Among eligible regimens", years_str=success_years_str,
                                  accent="#16a34a"), unsafe_allow_html=True)
 with kpi4:
-    st.markdown(render_kpi_card("⚠️", "Initial Death Rate", init_death_overall_str,
-                                 sub="Died before treatment initiation", years=init_death_years_str,
+    st.markdown(render_kpi_card("Initial Death Rate", init_death_overall_str,
+                                 sub="Died before treatment initiation", years_str=init_death_years_str,
                                  accent="#f97316"), unsafe_allow_html=True)
 with kpi5:
-    st.markdown(render_kpi_card("⚰️", "Normal Death Rate", death_overall_str,
-                                 sub="During treatment", years=death_years_str,
+    st.markdown(render_kpi_card("Normal Death Rate", death_overall_str,
+                                 sub="During treatment", years_str=death_years_str,
                                  accent="#dc2626"), unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # 🔍 DETAILED BIFURCATION (Addiction / Comorbidity / Migration)
 # ---------------------------------------------------------
 st.markdown("<div style='height:22px;'></div>", unsafe_allow_html=True)
-st.markdown("<h4 style='color: #334155; font-weight: 700; font-size:16px;'>🔍 Detailed Breakdown of Adverse Outcomes</h4>", unsafe_allow_html=True)
+st.markdown("<h4 style='color: #334155; font-weight: 700; font-size:16px;'>Detailed Breakdown of Adverse Outcomes</h4>", unsafe_allow_html=True)
+st.markdown("<div style='font-size:12px; color:#94a3b8; margin-bottom:14px;'>Based on field entries below. Percentages are calculated out of all records, so they will read 0% until entries are filled in. A record with more than one condition (e.g. Diabetes + HIV) is counted in every matching category, so totals can add up to more than 100%.</div>", unsafe_allow_html=True)
 
-def render_breakdown_card(title, icon, data_dict, total, accent):
+def render_breakdown_card(title, data_dict, total, accent):
     if total > 0 and data_dict:
-        rows_html = ""
+        row_parts = []
         for label, count in data_dict.items():
             pct = (count / total * 100) if total > 0 else 0
-            rows_html += f"""
-            <div class="breakdown-row">
-                <span>{label}</span>
-                <span><b>{count}</b>&nbsp;({pct:.0f}%)</span>
-            </div>
-            <div class="progress-bg"><div class="progress-fill" style="width:{pct:.0f}%; background:{accent};"></div></div>
-            """
+            row_parts.append(
+                f'<div class="breakdown-row"><span>{label}</span><span><b>{count}</b>&nbsp;({pct:.0f}%)</span></div>'
+                f'<div class="progress-bg"><div class="progress-fill" style="width:{pct:.0f}%; background:{accent};"></div></div>'
+            )
+        rows_html = "".join(row_parts)
     else:
         rows_html = "<div class='breakdown-empty'>No entries recorded yet</div>"
-    return f"""
-    <div class="breakdown-card">
-        <div class="breakdown-title">{icon} {title} &nbsp;<span style='color:#94a3b8; font-weight:500;'>(out of {total})</span></div>
-        {rows_html}
-    </div>
-    """
+    title_html = (
+        f'<div class="breakdown-title">'
+        f'<span class="kpi-dot" style="background:{accent};"></span>{title}'
+        f'&nbsp;<span style="color:#94a3b8; font-weight:500;">(out of {total})</span></div>'
+    )
+    return f'<div class="breakdown-card">{title_html}{rows_html}</div>'
 
 b1, b2, b3 = st.columns(3)
 with b1:
-    st.markdown(render_breakdown_card("Addiction Status", "🍷", addiction_breakdown, total_adverse_count, accent="#7c3aed"), unsafe_allow_html=True)
+    st.markdown(render_breakdown_card("Addiction Status", addiction_breakdown, total_adverse_count, accent="#7c3aed"), unsafe_allow_html=True)
 with b2:
-    st.markdown(render_breakdown_card("Comorbidity", "🏥", comorbidity_breakdown, total_adverse_count, accent="#0891b2"), unsafe_allow_html=True)
+    st.markdown(render_breakdown_card("Comorbidity", comorbidity_breakdown, total_adverse_count, accent="#0891b2"), unsafe_allow_html=True)
 with b3:
-    st.markdown(render_breakdown_card("Migration Status", "🧭", migration_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
+    st.markdown(render_breakdown_card("Migration Status", migration_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
 
 st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_allow_html=True)
 # ==========================================
 # 📝 INLINE SPREADSHEET EDITOR (DIRECT DATA ENTRY)
 # ==========================================
-st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>📝 Interactive Line List & Field Data Entry</h3>", unsafe_allow_html=True)
-st.markdown("<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Double-click the cells in the <b>Addiction, Comorbidity, Migration, or Remarks</b> columns to edit them directly. Hit the Save button when you are done!</div>", unsafe_allow_html=True)
+st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Interactive Line List & Field Data Entry</h3>", unsafe_allow_html=True)
+st.markdown("<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Double-click a cell in the <b>Addiction, Comorbidity, Migration, or Remarks</b> column to edit it, then hit Save. Each cell here only accepts <b>one</b> value — if a record has more than one condition (e.g. both HIV and Diabetes), use the <b>Multi-Condition Entry</b> form further below instead.</div>", unsafe_allow_html=True)
 if not df_live.empty:
     df_display = df_live.copy()
     
@@ -430,5 +437,72 @@ if not df_live.empty:
                 st.success("✅ All field data successfully saved to the Master Sheet!")
                 get_live_tracker.clear() # Clears cache to fetch fresh data
                 st.rerun()
+
+    # ==========================================
+    # 🧷 MULTI-CONDITION ENTRY (select MULTIPLE Addictions / Comorbidities for one record)
+    # ==========================================
+    st.markdown("<hr style='border: 1px solid #e2e8f0; margin: 30px 0 20px 0;'>", unsafe_allow_html=True)
+    st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Multi-Condition Entry</h3>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Use this when one patient has <b>more than one</b> Addiction or Comorbidity — for example both <b>HIV</b> and <b>Diabetes</b>. Pick the Episode ID, tick every condition that applies, and save. This writes directly to the same row as the table above.</div>", unsafe_allow_html=True)
+
+    if 'Episode ID' in df_display.columns and len(df_display) > 0:
+        ep_options = df_display['Episode ID'].astype(str).tolist()
+        sel_ep = st.selectbox("Select Episode ID", ep_options, key="multi_entry_ep")
+
+        sel_row = df_display[df_display['Episode ID'].astype(str) == str(sel_ep)]
+        if not sel_row.empty:
+            sel_row = sel_row.iloc[0]
+            existing_addiction = [x.strip() for x in str(sel_row.get("Addiction", "")).split(",") if x.strip()]
+            existing_comorbidity = [x.strip() for x in str(sel_row.get("Comorbidity", "")).split(",") if x.strip()]
+            existing_migration = str(sel_row.get("Migration", ""))
+            existing_remarks = str(sel_row.get("Remarks", ""))
+
+            addiction_opts = ["Alcohol", "Tobacco", "Other", "None"]
+            comorbidity_opts = ["Diabetes", "HIV", "Hypertension", "Other", "None"]
+            migration_opts = ["", "YES - Native outside Ahmedabad", "NO - Local Resident"]
+
+            m1, m2 = st.columns(2)
+            with m1:
+                sel_addiction = st.multiselect(
+                    "Addiction (select all that apply)", addiction_opts,
+                    default=[a for a in existing_addiction if a in addiction_opts],
+                    key="multi_entry_addiction"
+                )
+            with m2:
+                sel_comorbidity = st.multiselect(
+                    "Comorbidity (select all that apply)", comorbidity_opts,
+                    default=[c for c in existing_comorbidity if c in comorbidity_opts],
+                    key="multi_entry_comorbidity"
+                )
+            m3, m4 = st.columns(2)
+            with m3:
+                mig_default_idx = migration_opts.index(existing_migration) if existing_migration in migration_opts else 0
+                sel_migration = st.selectbox("Migration Status", migration_opts, index=mig_default_idx, key="multi_entry_migration")
+            with m4:
+                sel_remarks = st.text_input("Remarks", value=existing_remarks, key="multi_entry_remarks")
+
+            if st.button("💾 Save Multi-Condition Entry", type="primary", use_container_width=True, key="multi_entry_save"):
+                with st.spinner("Writing updates securely to Google Sheets..."):
+                    try:
+                        cell = new_sheet.find(str(sel_ep), in_column=8)
+                        timestamp = datetime.now(india_tz).strftime("%d-%b-%Y %H:%M:%S")
+                        submitted_by = st.session_state.current_user
+
+                        addic_val = ", ".join(sel_addiction)
+                        comorb_val = ", ".join(sel_comorbidity)
+
+                        cells_to_update = new_sheet.range(f'Q{cell.row}:V{cell.row}')
+                        new_vals = [addic_val, comorb_val, sel_migration, sel_remarks, submitted_by, timestamp]
+                        for i, val in enumerate(new_vals):
+                            cells_to_update[i].value = str(val) if val is not None else ""
+                        new_sheet.update_cells(cells_to_update)
+
+                        st.success(f"✅ Episode ID {sel_ep} updated successfully!")
+                        get_live_tracker.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"❌ Failed to update Episode ID {sel_ep}. Ensure the ID exists in Column H. Error: {e}")
+    else:
+        st.info("ℹ️ No Episode IDs available for the current filter.")
 else:
     st.info("ℹ️ No records found in the New Sheet.")
