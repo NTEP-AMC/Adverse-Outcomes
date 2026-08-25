@@ -33,7 +33,6 @@ if "auth" not in st.session_state:
 try:
     df_users = pd.read_csv("users.csv")
     df_users['Username'] = df_users['Username'].astype(str).str.strip().str.upper()
-    df_users['Password'] = df_users['Password'].astype(str).str.strip()
 except:
     st.error("⚠️ User Database (users.csv) not found in the repository!")
     st.stop()
@@ -73,7 +72,7 @@ if not st.session_state.auth:
             pwd = st.text_input("Password", type="password").strip()
             
             if st.button("Sign In Securely"):
-                user_match = df_users[(df_users['Username'] == uname) & (df_users['Password'] == pwd)]
+                user_match = df_users[(df_users['Username'] == uname) & (df_users['Password'].astype(str).str.strip() == pwd)]
                 if not user_match.empty: 
                     st.session_state.auth = True
                     st.session_state.current_user = uname
@@ -101,30 +100,33 @@ NEW_SHEET_URL = "https://docs.google.com/spreadsheets/d/11JHb7Zv4KqV_PAY9REGBVdk
 
 try:
     new_sheet = client.open_by_url(NEW_SHEET_URL).sheet1
-    existing_records = new_sheet.get_all_records()
-    submitted_ids = [str(row.get('Episode ID', '')).strip().upper() for row in existing_records if str(row.get('Episode ID', '')).strip()]
 except Exception as e:
-    new_sheet = None
-    submitted_ids = []
+    st.error("Could not connect to the New Google Sheet. Check permissions and URL.")
+    st.stop()
 
-BASE_OUTCOME_URL = "https://docs.google.com/spreadsheets/d/1Dfvl87uaZZ12_5F4dhHXTP_u8i9NM9TASWN8wyX18nE/export?format=csv&gid="
+# Fetch Live Data (New Sheet for Line List & Data Entry)
+@st.cache_data(ttl=10, show_spinner="Syncing Live Data Tracker...")
+def get_live_tracker():
+    try:
+        return pd.DataFrame(new_sheet.get_all_records())
+    except:
+        return pd.DataFrame()
 
-@st.cache_data(ttl=600, show_spinner="Fetching latest registers and calculating metrics...")
-def load_all_registers():
+df_live = get_live_tracker()
+
+# Fetch KPIs (Old Sheet for denominators)
+@st.cache_data(ttl=600, show_spinner="Calculating Executive Metrics...")
+def load_kpi_data():
     import urllib.request
-    def get_sheet_df(gid):
-        try:
-            url = BASE_OUTCOME_URL + gid
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=30) as response:
-                content = response.read()
-                return pd.read_csv(io.BytesIO(content), low_memory=False, dtype=str, on_bad_lines='skip')
-        except:
-            return pd.DataFrame()
+    try:
+        url = "https://docs.google.com/spreadsheets/d/1Dfvl87uaZZ12_5F4dhHXTP_u8i9NM9TASWN8wyX18nE/export?format=csv&gid=1898426568"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return pd.read_csv(io.BytesIO(response.read()), low_memory=False, dtype=str, on_bad_lines='skip')
+    except:
+        return pd.DataFrame()
 
-    return get_sheet_df("1027512112"), get_sheet_df("1898426568"), get_sheet_df("1981365704")
-
-df_master_raw, df_this_raw, df_prev_raw = load_all_registers()
+df_this_raw = load_kpi_data()
 
 # ---------------------------------------------------------
 # 🧮 CALCULATION ENGINE: YEAR-WISE SUCCESS & DEATH RATES
@@ -153,12 +155,10 @@ if not df_this_raw.empty:
     regimen_series = get_col_series(df_this_raw, ['TYPE OF TB REGIMEN'], 'BJ').fillna("").astype(str).str.upper()
     outcome_series = get_col_series(df_this_raw, ['TREATMENT OUTCOME'], 'BK').fillna("").astype(str).str.upper().str.strip()
     
-    # Date Columns for Year Parsing
     diag_series = get_col_series(df_this_raw, ['DIAGNOSIS DATE'], 'S').fillna("").astype(str).str.strip()
     init_series = get_col_series(df_this_raw, ['INITIATION DATE'], 'BM').fillna("").astype(str).str.strip()
     out_date_series = get_col_series(df_this_raw, ['OUTCOME DATE'], 'CB').fillna("").astype(str).str.strip()
 
-    # Build calculation dataframe
     df_calc = pd.DataFrame({
         'Valid': ~ep_series.isin(["", "NAN", "NONE", "NULL", "N/A"]),
         'Regimen_Eligible': regimen_series.str.contains("2HRZE/4HRE|2HRZES|4HRE|2HRZE", regex=True, na=False),
@@ -171,24 +171,18 @@ if not df_this_raw.empty:
         'No_Init': init_series == ""
     })
 
-    # --- 1. Success & Normal Death (Based on Initiation Year) ---
     df_calc_init = df_calc[df_calc['Valid'] & df_calc['Regimen_Eligible']].copy()
     total_eligible = len(df_calc_init)
     
     if total_eligible > 0:
-        # Overall
         success_overall_str = f"{(df_calc_init['Is_Success'].sum() / total_eligible * 100):.1f}%"
         death_overall_str = f"{(df_calc_init['Is_Death'].sum() / total_eligible * 100):.1f}%"
         
-        # Year-wise
         grp_succ = df_calc_init.groupby('Init_Year')['Is_Success'].agg(['sum', 'count'])
         grp_death = df_calc_init.groupby('Init_Year')['Is_Death'].agg(['sum', 'count'])
-        
         success_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_succ.iterrows() if pd.notna(y) and r['count'] > 0])
         death_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_death.iterrows() if pd.notna(y) and r['count'] > 0])
 
-    # --- 2. Initial Death Rate (Based on Diagnosis Year) ---
-    # Condition: Diag present, OutDate present, Init is blank, Outcome is DIED
     df_calc_diag = df_calc[df_calc['Valid']].copy()
     df_calc_diag['Is_Initial_Death'] = df_calc_diag['Has_Diag'] & df_calc_diag['Has_OutDate'] & df_calc_diag['No_Init'] & df_calc_diag['Is_Death']
     
@@ -198,45 +192,12 @@ if not df_this_raw.empty:
         grp_init = df_calc_diag.groupby('Diag_Year')['Is_Initial_Death'].agg(['sum', 'count'])
         init_death_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_init.iterrows() if pd.notna(y) and r['count'] > 0])
 
-# ---------------------------------------------------------
-# ⚙️ MASTER DATA FORMATTING & MERGING
-# ---------------------------------------------------------
-df_combined_master = df_master_raw.copy()
-total_adverse_count = 0
+# Calculate Live Metrics
+total_adverse_count = len(df_live)
 ahmedabad_pct_str = "0%"
-
-if not df_combined_master.empty:
-    rename_map = {}
-    for col in df_combined_master.columns:
-        c_clean = re.sub(r'[^A-Z0-9]', '', str(col).upper())
-        if c_clean in ['AGE', 'PATIENTAGE']: rename_map[col] = 'Age'
-        elif c_clean in ['REGIME', 'REGIMEN', 'TYPEOFTBREGIMEN']: rename_map[col] = 'Type_of_TB_regimen'
-        elif c_clean in ['EPISODEID', 'NTEPID', 'ID', 'PATIENTID']: rename_map[col] = 'Episode ID'
-        elif c_clean in ['TREATMENTOUTCOME', 'OUTCOME']: rename_map[col] = 'Treatment Outcome'
-        elif c_clean in ['ZONE', 'CURRENTZONE', 'DISTRICT']: rename_map[col] = 'ZONE'
-        elif c_clean in ['TBUNIT', 'TU']: rename_map[col] = 'TB Unit'
-        elif c_clean in ['PHI', 'HEALTHFACILITY', 'FACILITY']: rename_map[col] = 'PHI'
-        elif c_clean in ['PATIENTNAME', 'NAME']: rename_map[col] = 'Patient Name'
-        elif c_clean in ['FACILITYTYPE', 'TYPE']: rename_map[col] = 'Facility Type'
-        elif c_clean in ['ADVERSEDATE', 'DATE']: rename_map[col] = 'ADVERSE DATE'
-        elif c_clean in ['DIAGNOSISDATE']: rename_map[col] = 'Diagnosis Date'
-        elif c_clean in ['INITIATIONDATE']: rename_map[col] = 'Initiation Date'
-        elif c_clean in ['OUTCOMEDATE']: rename_map[col] = 'Outcome Date'
-        # 🆕 New Columns Added
-        elif c_clean in ['PRIMARYPHONE', 'PHONE', 'MOBILENO']: rename_map[col] = 'Primary Phone'
-        elif c_clean in ['SPECTRUMDIAGNOSINGPHI', 'DIAGNOSINGPHI']: rename_map[col] = 'Diagnosing PHI'
-
-    df_combined_master = df_combined_master.rename(columns=rename_map)
-    total_adverse_count = len(df_combined_master)
-
-    if total_adverse_count > 0 and 'ZONE' in df_combined_master.columns:
-        ahmedabad_mask = df_combined_master['ZONE'].astype(str).str.upper().str.contains("AHMEDABAD|EAST|WEST|NORTH|SOUTH|CENTRAL|AMC", regex=True, na=False)
-        ahmedabad_pct_str = f"{int((ahmedabad_mask.sum() / total_adverse_count) * 100)}%"
-
-    if st.session_state.role in ["TB_UNIT", "TU"] and 'TB Unit' in df_combined_master.columns:
-        df_combined_master = df_combined_master[df_combined_master['TB Unit'].astype(str).str.upper().str.contains(st.session_state.target.strip().upper(), na=False)]
-    elif st.session_state.role == "ZONE" and 'ZONE' in df_combined_master.columns:
-        df_combined_master = df_combined_master[df_combined_master['ZONE'].astype(str).str.upper().str.contains(st.session_state.target.replace("ZONE", "").strip().upper(), na=False)]
+if total_adverse_count > 0 and 'ZONE' in df_live.columns:
+    ahmedabad_mask = df_live['ZONE'].astype(str).str.upper().str.contains("AHMEDABAD|EAST|WEST|NORTH|SOUTH|CENTRAL|AMC", regex=True, na=False)
+    ahmedabad_pct_str = f"{int((ahmedabad_mask.sum() / total_adverse_count) * 100)}%"
 
 # ==========================================
 # 📊 EXECUTIVE SUMMARY (MOH VIEW)
@@ -253,111 +214,124 @@ st.markdown("""
 st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>📊 Executive Summary</h3>", unsafe_allow_html=True)
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
-with kpi1:
-    st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Total Adverse Outcomes</div><div class='kpi-value'>{total_adverse_count}</div></div>", unsafe_allow_html=True)
-with kpi2:
-    st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Ahmedabad Residents</div><div class='kpi-value'>{ahmedabad_pct_str}</div></div>", unsafe_allow_html=True)
-with kpi3:
-    st.markdown(f"<div class='kpi-card' style='background-color: #16a34a;'><div class='kpi-title'>Success Rate</div><div class='kpi-value'>{success_overall_str}</div><div class='kpi-sub'>{success_years_str}</div></div>", unsafe_allow_html=True)
-with kpi4:
-    st.markdown(f"<div class='kpi-card' style='background-color: #f97316;'><div class='kpi-title'>Initial Death Rate</div><div class='kpi-value'>{init_death_overall_str}</div><div class='kpi-sub'>{init_death_years_str}</div></div>", unsafe_allow_html=True)
-with kpi5:
-    st.markdown(f"<div class='kpi-card' style='background-color: #dc2626;'><div class='kpi-title'>Normal Death Rate</div><div class='kpi-value'>{death_overall_str}</div><div class='kpi-sub'>{death_years_str}</div></div>", unsafe_allow_html=True)
+with kpi1: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Total Adverse Outcomes</div><div class='kpi-value'>{total_adverse_count}</div></div>", unsafe_allow_html=True)
+with kpi2: st.markdown(f"<div class='kpi-card'><div class='kpi-title'>Ahmedabad Residents</div><div class='kpi-value'>{ahmedabad_pct_str}</div></div>", unsafe_allow_html=True)
+with kpi3: st.markdown(f"<div class='kpi-card' style='background-color: #16a34a;'><div class='kpi-title'>Success Rate</div><div class='kpi-value'>{success_overall_str}</div><div class='kpi-sub'>{success_years_str}</div></div>", unsafe_allow_html=True)
+with kpi4: st.markdown(f"<div class='kpi-card' style='background-color: #f97316;'><div class='kpi-title'>Initial Death Rate</div><div class='kpi-value'>{init_death_overall_str}</div><div class='kpi-sub'>{init_death_years_str}</div></div>", unsafe_allow_html=True)
+with kpi5: st.markdown(f"<div class='kpi-card' style='background-color: #dc2626;'><div class='kpi-title'>Normal Death Rate</div><div class='kpi-value'>{death_overall_str}</div><div class='kpi-sub'>{death_years_str}</div></div>", unsafe_allow_html=True)
 
 st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_allow_html=True)
 
 # ==========================================
-# 📝 FIELD STAFF DATA ENTRY MODULE
+# ⚡ FAST FIELD STAFF DATA ENTRY (DROPDOWN)
 # ==========================================
-st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>📝 Field Staff Data Entry</h3>", unsafe_allow_html=True)
+st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>⚡ Fast Field Data Entry</h3>", unsafe_allow_html=True)
 
-search_id = st.text_input("🔍 Enter Patient Episode ID to Log Data", placeholder="e.g. 04-26-12345").strip().upper()
-
-if search_id:
-    if search_id in submitted_ids:
-        st.error(f"⛔ Data for Episode ID **{search_id}** has already been submitted. Duplicate entries are not allowed.")
+if not df_live.empty:
+    if 'Addiction' not in df_live.columns:
+        st.error("⚠️ Setup Required: Please add the following column headers to your Google Sheet starting at Column Q: 'Addiction', 'Comorbidity', 'Migration', 'Remarks', 'Submitted By', 'Timestamp'.")
     else:
-        patient_match = pd.DataFrame()
-        if not df_combined_master.empty and 'Episode ID' in df_combined_master.columns:
-            patient_match = df_combined_master[df_combined_master['Episode ID'].astype(str).str.strip().str.upper() == search_id]
-
-        if patient_match.empty:
-            st.error(f"⚠️ Patient ID **{search_id}** not found in the current adverse list.")
+        # Filter for the staff's specific TB Unit
+        df_staff_pending = df_live.copy()
+        if st.session_state.role in ["TB_UNIT", "TU"]:
+            staff_tu = st.session_state.target.strip().upper()
+            df_staff_pending = df_staff_pending[df_staff_pending['TB Unit'].astype(str).str.upper().str.contains(staff_tu, na=False)]
+            
+        # Isolate ONLY patients who haven't been entered yet
+        df_pending_only = df_staff_pending[df_staff_pending['Addiction'].fillna("").astype(str).str.strip() == ""]
+        
+        if df_pending_only.empty:
+            st.success("🎉 All caught up! There are no pending adverse outcomes for your area.")
         else:
-            p_row = patient_match.iloc[0]
-            p_name = str(p_row.get('Patient Name', 'Unknown')).strip().title()
-            p_tu = str(p_row.get('TB Unit', 'Unknown')).strip().upper()
-            p_out = str(p_row.get('Treatment Outcome', 'N/A')).strip().upper()
+            st.markdown("<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Select a pending patient from your area to log their root cause details. The list updates automatically.</div>", unsafe_allow_html=True)
+            
+            # Create Dropdown Options
+            options = df_pending_only.apply(lambda x: f"{x['Episode ID']} - {x['Patient Name']} ({x['Treatment Outcome']})", axis=1).tolist()
+            options.insert(0, "-- Select a Patient --")
+            
+            selected_patient = st.selectbox("⏳ Pending Patients:", options)
+            
+            if selected_patient != "-- Select a Patient --":
+                active_id = selected_patient.split(" - ")[0].strip()
+                p_info = df_pending_only[df_pending_only['Episode ID'].astype(str) == active_id].iloc[0]
+                
+                with st.form("fast_entry_form", clear_on_submit=True):
+                    st.write(f"**Logging details for:** {p_info['Patient Name']} | **Zone:** {p_info['ZONE']}")
+                    
+                    fc1, fc2 = st.columns(2)
+                    with fc1:
+                        addiction = st.selectbox("Does the patient have any addiction?", ["Select", "YES - Alcohol", "YES - Tobacco", "YES - Multiple", "NO"])
+                        comorbidity = st.selectbox("Known Comorbidities?", ["Select", "Diabetes", "HIV", "Hypertension", "None", "Other"])
+                    with fc2:
+                        migration = st.selectbox("Is the patient a migratory resident?", ["Select", "YES - Native outside Ahmedabad", "NO - Local Resident"])
+                        staff_notes = st.text_area("Field Staff Remarks / Cause Summary")
 
-            if st.session_state.role in ["TB_UNIT", "TU"]:
-                staff_tu = st.session_state.target.strip().upper()
-                if staff_tu not in p_tu:
-                    st.error(f"⛔ Access Denied: Patient belongs to TB Unit **{p_tu}**. You are only authorized for **{staff_tu}**.")
-                    st.stop()
+                    submit_btn = st.form_submit_button("💾 Save to Master Database", use_container_width=True)
 
-            st.success(f"✅ Patient: **{p_name}** | TB Unit: **{p_tu}** | Outcome: **{p_out}**")
-
-            with st.form("field_entry_form", clear_on_submit=True):
-                st.write("#### Patient Root Cause & Questionnaire")
-                fc1, fc2 = st.columns(2)
-                with fc1:
-                    addiction = st.selectbox("Does the patient have any addiction?", ["Select", "YES - Alcohol", "YES - Tobacco", "YES - Multiple", "NO"])
-                    comorbidity = st.selectbox("Known Comorbidities?", ["Select", "Diabetes", "HIV", "Hypertension", "None", "Other"])
-                with fc2:
-                    migration = st.selectbox("Is the patient a migratory resident?", ["Select", "YES - Native outside Ahmedabad", "NO - Local Resident"])
-                    staff_notes = st.text_area("Field Staff Remarks / Cause Summary")
-
-                submit_btn = st.form_submit_button("💾 Save to Google Sheet", use_container_width=True)
-
-                if submit_btn:
-                    if "Select" in [addiction, comorbidity, migration]:
-                        st.error("⚠️ Please answer all dropdown questions before submitting.")
-                    else:
-                        timestamp = datetime.now(india_tz).strftime("%d-%b-%Y %H:%M:%S")
-                        new_row = [timestamp, st.session_state.current_user, search_id, p_name, p_tu, addiction, comorbidity, migration, staff_notes]
-                        
-                        try:
-                            if new_sheet:
-                                new_sheet.append_row(new_row)
-                                submitted_ids.append(search_id)
-                                st.success(f"🎉 Successfully submitted data for Episode ID: {search_id}!")
-                                st.balloons()
-                            else:
-                                st.error("❌ Google Sheet connection is not initialized.")
-                        except Exception as e:
-                            st.error(f"❌ Error writing to Google Sheet: {e}")
+                    if submit_btn:
+                        if "Select" in [addiction, comorbidity, migration]:
+                            st.error("⚠️ Please answer all dropdown questions before submitting.")
+                        else:
+                            timestamp = datetime.now(india_tz).strftime("%d-%b-%Y %H:%M:%S")
+                            
+                            try:
+                                # Look up exact row by Episode ID (Assuming it is Column H / Index 8)
+                                cell = new_sheet.find(active_id, in_column=8)
+                                
+                                # Highly secure cell update targeting columns Q through V
+                                cells_to_update = new_sheet.range(f'Q{cell.row}:V{cell.row}')
+                                new_vals = [addiction, comorbidity, migration, staff_notes, st.session_state.current_user, timestamp]
+                                
+                                for i, val in enumerate(new_vals):
+                                    cells_to_update[i].value = new_vals[i]
+                                
+                                new_sheet.update_cells(cells_to_update)
+                                
+                                st.success(f"🎉 Success! Data for {active_id} saved.")
+                                get_live_tracker.clear() # Clear cache to instantly remove them from the dropdown
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Error updating row in Google Sheet. Make sure Episode ID is in Column H. Error: {e}")
 
 st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_allow_html=True)
 
 # ==========================================
 # 📋 MASTER ADVERSE OUTCOMES DATA TABLE
 # ==========================================
-st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>📋 Adverse Outcomes Line List</h3>", unsafe_allow_html=True)
+st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>📋 Full Integrated Line List</h3>", unsafe_allow_html=True)
+st.markdown("<div style='font-size: 13px; color: #555; margin-bottom: 15px;'><i>This table displays your original master data on the left, seamlessly merged with the new field data entries on the right.</i></div>", unsafe_allow_html=True)
 
-if not df_combined_master.empty:
+if not df_live.empty:
+    df_display = df_live.copy()
+    
+    # Filter by user role for the Line List view
+    if st.session_state.role in ["TB_UNIT", "TU"]:
+        df_display = df_display[df_display['TB Unit'].astype(str).str.upper().str.contains(st.session_state.target.strip().upper(), na=False)]
+    elif st.session_state.role == "ZONE":
+        df_display = df_display[df_display['ZONE'].astype(str).str.upper().str.contains(st.session_state.target.replace("ZONE", "").strip().upper(), na=False)]
+
     f1, f2, f3 = st.columns(3)
     with f1:
-        opts_out = sorted([x for x in df_combined_master['Treatment Outcome'].unique() if str(x).strip() != ""]) if 'Treatment Outcome' in df_combined_master.columns else []
-        sel_out = st.multiselect("Filter by Treatment Outcome", opts_out, default=opts_out)
+        opts_out = sorted([x for x in df_display['Treatment Outcome'].unique() if str(x).strip() != ""]) if 'Treatment Outcome' in df_display.columns else []
+        sel_out = st.multiselect("Filter by Treatment Outcome", opts_out)
     with f2:
-        opts_zone = sorted([x for x in df_combined_master['ZONE'].unique() if str(x).strip() != ""]) if 'ZONE' in df_combined_master.columns else []
+        opts_zone = sorted([x for x in df_display['ZONE'].unique() if str(x).strip() != ""]) if 'ZONE' in df_display.columns else []
         sel_zone = st.multiselect("Filter by Zone", opts_zone)
     with f3:
-        opts_per = sorted([x for x in df_combined_master['ADVERSE DATE'].unique() if str(x).strip() != ""]) if 'ADVERSE DATE' in df_combined_master.columns else []
-        sel_per = st.multiselect("Filter by Adverse Date Tag", opts_per)
+        # Filter by Pending or Completed Entries
+        entry_status = st.selectbox("Data Entry Status", ["All", "Pending Entry", "Completed"])
 
-    df_display = df_combined_master.copy()
     if sel_out and 'Treatment Outcome' in df_display.columns: df_display = df_display[df_display['Treatment Outcome'].isin(sel_out)]
     if sel_zone and 'ZONE' in df_display.columns: df_display = df_display[df_display['ZONE'].isin(sel_zone)]
-    if sel_per and 'ADVERSE DATE' in df_display.columns: df_display = df_display[df_display['ADVERSE DATE'].isin(sel_per)]
-
-    # 🆕 Updated master columns list to include the new fields
-    master_cols = ['ADVERSE DATE', 'ZONE', 'TB Unit', 'Diagnosing PHI', 'PHI', 'Facility Type', 'Patient Name', 'Primary Phone', 'Episode ID', 'Age', 'Type_of_TB_regimen', 'Diagnosis Date', 'Initiation Date', 'Outcome Date', 'Treatment Outcome', 'On Treatment Days']
-    cols_to_show = [c for c in master_cols if c in df_display.columns]
     
-    st.dataframe(df_display[cols_to_show] if cols_to_show else df_display, width="stretch", hide_index=True)
+    if entry_status == "Pending Entry" and 'Addiction' in df_display.columns:
+        df_display = df_display[df_display['Addiction'].astype(str).str.strip() == ""]
+    elif entry_status == "Completed" and 'Addiction' in df_display.columns:
+        df_display = df_display[df_display['Addiction'].astype(str).str.strip() != ""]
+
+    st.dataframe(df_display, width="stretch", hide_index=True)
 
     csv_data = df_display.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download Filtered Master List (CSV)", csv_data, "Adverse_Outcomes_Filtered.csv", "text/csv")
+    st.download_button("📥 Download Full Integrated List (CSV)", csv_data, "Adverse_Outcomes_Integrated.csv", "text/csv")
 else:
-    st.info("ℹ️ No records found in the Master Register.")
+    st.info("ℹ️ No records found in the New Sheet.")
