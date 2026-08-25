@@ -182,39 +182,93 @@ if total_adverse_count > 0 and 'ZONE' in df_live.columns:
     ahmedabad_pct_str = f"{int((ahmedabad_count / total_adverse_count) * 100)}%"
 
 # ---------------------------------------------------------
-# 🧮 BIFURCATED BREAKDOWNS: Addiction / Comorbidity / Migration
-# (built from the same Addiction/Comorbidity/Migration columns
-#  captured by the data-entry editor below)
+# 🧮 REAL FIELD DATA-ENTRY COLUMNS (English headers)
+# These must exist as column headers in your Google Sheet.
 # ---------------------------------------------------------
-addiction_breakdown = {}
+COL_MONTHS_RESIDING     = "Months Residing in Ahmedabad (as of Outcome)"
+COL_RESIDED_THROUGHOUT  = "Resided in Ahmedabad Throughout Treatment"
+COL_PLACE_OF_DEATH      = "Place of Death"
+COL_COMORBIDITY         = "Comorbidity"
+COL_STATE_NON_AMC       = "State (If Non-AMC)"
+COL_DISTRICT_NON_AMC    = "District (If Non-AMC)"
+COL_TRANSFER_REASON     = "Transfer Reason (If Non-AMC)"
+COL_TRANSFER_OUT_DATE   = "Transfer Out Date"
+COL_REJECT_DATE         = "Reject Date (If Rejected)"
+COL_REMARKS             = "Remarks"
+COL_SUBMITTED_BY        = "Submitted By"
+COL_LAST_UPDATED        = "Last Updated"
+
+REQUIRED_ENTRY_COLS = [
+    COL_MONTHS_RESIDING, COL_RESIDED_THROUGHOUT, COL_PLACE_OF_DEATH, COL_COMORBIDITY,
+    COL_STATE_NON_AMC, COL_DISTRICT_NON_AMC, COL_TRANSFER_REASON,
+    COL_TRANSFER_OUT_DATE, COL_REJECT_DATE, COL_REMARKS,
+]
+META_ENTRY_COLS = [COL_SUBMITTED_BY, COL_LAST_UPDATED]
+
+COMORBIDITY_OPTIONS = [
+    "Diabetes", "Cardiovascular disease", "Hypertension", "COPD", "Asthma",
+    "Other lung disease", "Chronic liver disease", "Chronic kidney disease", "Cancer",
+    "HIV/AIDS", "Occupational lung disease", "Anaemia", "Mental health disorder",
+    "Autoimmune disorder", "Severe malnutrition", "Congenital disorder",
+    "Chronic alcoholism", "P/H of COVID-19", "Sickle cell trait or anaemia",
+    "Other", "Multiple", "NA",
+]
+PLACE_OF_DEATH_OPTIONS = ["", "Home", "Government Hospital", "Private Hospital", "In Transit / Enroute", "Other"]
+TRANSFER_REASON_OPTIONS = ["", "Migration for Work", "Family Relocation", "Better Treatment Facility", "Other"]
+INDIAN_STATES_UTS = [
+    "", "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chhattisgarh", "Goa", "Gujarat",
+    "Haryana", "Himachal Pradesh", "Jharkhand", "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra",
+    "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab", "Rajasthan", "Sikkim",
+    "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal",
+    "Andaman and Nicobar Islands", "Chandigarh", "Dadra and Nagar Haveli and Daman and Diu",
+    "Delhi", "Jammu and Kashmir", "Ladakh", "Lakshadweep", "Puducherry",
+]
+
+def split_multi(val):
+    return [x.strip() for x in str(val).split(",") if x.strip()]
+
+def colnum_to_letter(n):
+    letters = ""
+    while n > 0:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+# ---------------------------------------------------------
+# 🧮 BIFURCATED BREAKDOWNS (Comorbidity / Residency / Transfer-Reject)
+# ---------------------------------------------------------
 comorbidity_breakdown = {}
-migration_breakdown = {}
+residency_breakdown = {}
+transfer_reject_breakdown = {}
 entry_completed_count = 0
 
 if not df_live.empty:
-    if 'Addiction' in df_live.columns:
-        addic_series = df_live['Addiction'].fillna("").astype(str)
-        entry_completed_count = int((addic_series.str.strip() != "").sum())
-        addiction_breakdown = {
-            "Alcohol":  int(addic_series.str.contains("Alcohol", case=False, na=False).sum()),
-            "Tobacco":  int(addic_series.str.contains("Tobacco", case=False, na=False).sum()),
-            "Multiple": int(addic_series.str.contains("Multiple", case=False, na=False).sum()),
-            "None":     int(addic_series.str.contains(r"^NO(\s|-|$)|^None$", case=False, na=False, regex=True).sum()),
+    if COL_RESIDED_THROUGHOUT in df_live.columns:
+        resided_series = df_live[COL_RESIDED_THROUGHOUT].fillna("").astype(str).str.strip().str.upper()
+        entry_completed_count = int((resided_series != "").sum())
+        residency_breakdown = {
+            "Resided in Ahmedabad Throughout": int((resided_series == "YES").sum()),
+            "Did Not Reside Throughout":       int((resided_series == "NO").sum()),
         }
-    if 'Comorbidity' in df_live.columns:
-        comorb_series = df_live['Comorbidity'].fillna("").astype(str)
-        comorbidity_breakdown = {
-            "Diabetes":     int(comorb_series.str.contains("Diabetes", case=False, na=False).sum()),
-            "HIV":          int(comorb_series.str.contains("HIV", case=False, na=False).sum()),
-            "Hypertension": int(comorb_series.str.contains("Hypertension", case=False, na=False).sum()),
-            "Other":        int(comorb_series.str.contains("Other", case=False, na=False).sum()),
-            "None":         int(comorb_series.str.contains(r"^None$", case=False, na=False, regex=True).sum()),
-        }
-    if 'Migration' in df_live.columns:
-        mig_series = df_live['Migration'].fillna("").astype(str)
-        migration_breakdown = {
-            "Migrant (Outside Ahmedabad)": int(mig_series.str.contains("Native outside", case=False, na=False).sum()),
-            "Local Resident":              int(mig_series.str.contains("Local Resident", case=False, na=False).sum()),
+    if COL_COMORBIDITY in df_live.columns:
+        comorb_counts = {label: 0 for label in COMORBIDITY_OPTIONS}
+        for val in df_live[COL_COMORBIDITY].fillna(""):
+            for token in split_multi(val):
+                for label in COMORBIDITY_OPTIONS:
+                    if token.lower() == label.lower():
+                        comorb_counts[label] += 1
+                        break
+        comorbidity_breakdown = {k: v for k, v in sorted(comorb_counts.items(), key=lambda x: x[1], reverse=True) if v > 0}
+    if COL_TRANSFER_OUT_DATE in df_live.columns and COL_REJECT_DATE in df_live.columns:
+        transfer_series = df_live[COL_TRANSFER_OUT_DATE].fillna("").astype(str).str.strip()
+        reject_series = df_live[COL_REJECT_DATE].fillna("").astype(str).str.strip()
+        transferred_count = int((transfer_series != "").sum())
+        rejected_count = int((reject_series != "").sum())
+        retained_count = max(total_adverse_count - transferred_count - rejected_count, 0)
+        transfer_reject_breakdown = {
+            "Retained in AMC":        retained_count,
+            "Transferred (Non-AMC)":  transferred_count,
+            "Rejected":               rejected_count,
         }
 
 # ==========================================
@@ -252,6 +306,8 @@ st.markdown("""
         padding: 14px 16px 16px 16px;
         border: 1px solid #e2e8f0;
         height: 100%;
+        max-height: 300px;
+        overflow-y: auto;
     }
     .breakdown-title { font-size: 13px; font-weight: 700; color: #334155; margin-bottom: 10px; }
     .breakdown-row { display: flex; justify-content: space-between; font-size: 12px; color: #475569; margin-top: 8px; }
@@ -330,30 +386,41 @@ def render_breakdown_card(title, data_dict, total, accent):
 
 b1, b2, b3 = st.columns(3)
 with b1:
-    st.markdown(render_breakdown_card("Addiction Status", addiction_breakdown, total_adverse_count, accent="#7c3aed"), unsafe_allow_html=True)
-with b2:
     st.markdown(render_breakdown_card("Comorbidity", comorbidity_breakdown, total_adverse_count, accent="#0891b2"), unsafe_allow_html=True)
+with b2:
+    st.markdown(render_breakdown_card("Ahmedabad Residency (During Treatment)", residency_breakdown, total_adverse_count, accent="#2563eb"), unsafe_allow_html=True)
 with b3:
-    st.markdown(render_breakdown_card("Migration Status", migration_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
+    st.markdown(render_breakdown_card("Transfer & Rejection Overview", transfer_reject_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
+
 
 st.markdown("<hr style='border: 1px solid #cbd5e1; margin: 25px 0;'>", unsafe_allow_html=True)
 # ==========================================
 # 📝 INLINE SPREADSHEET EDITOR (DIRECT DATA ENTRY)
 # ==========================================
 st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Interactive Line List & Field Data Entry</h3>", unsafe_allow_html=True)
-st.markdown("<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Double-click a cell in the <b>Addiction, Comorbidity, Migration, or Remarks</b> column to edit it, then hit Save. Each cell here only accepts <b>one</b> value — if a record has more than one condition (e.g. both HIV and Diabetes), use the <b>Multi-Condition Entry</b> form further below instead.</div>", unsafe_allow_html=True)
+st.markdown(
+    "<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Double-click a cell to edit it, then hit Save. "
+    "<b>Comorbidity</b> is view-only here — since a patient can have more than one condition (e.g. both HIV and Diabetes), "
+    "edit it using the <b>Comorbidity (Multi-Select) Entry</b> form further below.</div>",
+    unsafe_allow_html=True
+)
+
 if not df_live.empty:
     df_display = df_live.copy()
-    
-    # Check if the setup is correct
-    required_cols = ['Addiction', 'Comorbidity', 'Migration', 'Remarks']
-    if not all(col in df_display.columns for col in required_cols):
-        st.error(f"⚠️ Setup Required: Please ensure your Google Sheet has exactly these columns: {', '.join(required_cols)}")
+
+    # Check the Google Sheet actually has all the required real columns (English headers)
+    missing_cols = [c for c in REQUIRED_ENTRY_COLS if c not in df_display.columns]
+    if missing_cols:
+        st.error("⚠️ Setup Required: your Google Sheet is missing these column headers. Add them exactly as written, in row 1:")
+        st.markdown("<div style='font-size:13px; color:#64748b;'>" + "<br>".join([f"• {c}" for c in missing_cols]) + "</div>", unsafe_allow_html=True)
         st.stop()
-    
+
     # Ensure no NaN values for clean text editing
-    for col in required_cols:
+    for col in REQUIRED_ENTRY_COLS:
         df_display[col] = df_display[col].fillna("").astype(str)
+    # Numeric column needs to actually be numeric for the NumberColumn editor
+    df_display[COL_MONTHS_RESIDING] = pd.to_numeric(df_display[COL_MONTHS_RESIDING], errors='coerce')
+
     # 1. Role-Based Filtering
     if st.session_state.role in ["TB_UNIT", "TU"]:
         df_display = df_display[df_display['TB Unit'].astype(str).str.upper().str.contains(st.session_state.target.strip().upper(), na=False)]
@@ -371,22 +438,34 @@ if not df_live.empty:
         entry_status = st.selectbox("Data Entry Status", ["All", "Pending Entry", "Completed"])
     if sel_out and 'Treatment Outcome' in df_display.columns: df_display = df_display[df_display['Treatment Outcome'].isin(sel_out)]
     if sel_zone and 'ZONE' in df_display.columns: df_display = df_display[df_display['ZONE'].isin(sel_zone)]
-    
+
     if entry_status == "Pending Entry":
-        df_display = df_display[df_display['Addiction'].str.strip() == ""]
+        df_display = df_display[df_display[COL_RESIDED_THROUGHOUT].str.strip() == ""]
     elif entry_status == "Completed":
-        df_display = df_display[df_display['Addiction'].str.strip() != ""]
-    # 🚨 CRITICAL: We must reset the index so Streamlit's editor maps perfectly to our filtered dataframe
+        df_display = df_display[df_display[COL_RESIDED_THROUGHOUT].str.strip() != ""]
+    # 🚨 CRITICAL: reset the index so Streamlit's editor maps perfectly to our filtered dataframe
     df_display = df_display.reset_index(drop=True)
-    # 3. Configure the Interactive Table
-    # Lock all historical columns to prevent accidental edits
-    locked_cols = [col for col in df_display.columns if col not in required_cols]
-    # Map the dropdown options directly into the table
+
+    # 3. Configure the Interactive Table — everything editable EXCEPT Comorbidity (view-only, real
+    #    multi-value edits happen in the dedicated form below) and historical/locked columns.
+    editable_cols = [c for c in REQUIRED_ENTRY_COLS if c != COL_COMORBIDITY]
+    locked_cols = [col for col in df_display.columns if col not in editable_cols]
     column_configuration = {
-        "Addiction": st.column_config.SelectboxColumn("Addiction", options=["", "YES - Alcohol", "YES - Tobacco", "YES - Multiple", "NO"]),
-        "Comorbidity": st.column_config.SelectboxColumn("Comorbidity", options=["", "Diabetes", "HIV", "Hypertension", "None", "Other"]),
-        "Migration": st.column_config.SelectboxColumn("Migration", options=["", "YES - Native outside Ahmedabad", "NO - Local Resident"]),
-        "Remarks": st.column_config.TextColumn("Remarks")
+        COL_MONTHS_RESIDING: st.column_config.NumberColumn(COL_MONTHS_RESIDING, min_value=0, step=1, format="%d"),
+        COL_RESIDED_THROUGHOUT: st.column_config.SelectboxColumn(COL_RESIDED_THROUGHOUT, options=["", "YES", "NO"]),
+        COL_PLACE_OF_DEATH: st.column_config.SelectboxColumn(
+            COL_PLACE_OF_DEATH, options=PLACE_OF_DEATH_OPTIONS,
+            help="Only applicable when Treatment Outcome is Died"
+        ),
+        COL_COMORBIDITY: st.column_config.TextColumn(
+            COL_COMORBIDITY, help="View only — edit using the Comorbidity (Multi-Select) form below"
+        ),
+        COL_STATE_NON_AMC: st.column_config.SelectboxColumn(COL_STATE_NON_AMC, options=INDIAN_STATES_UTS),
+        COL_DISTRICT_NON_AMC: st.column_config.TextColumn(COL_DISTRICT_NON_AMC),
+        COL_TRANSFER_REASON: st.column_config.SelectboxColumn(COL_TRANSFER_REASON, options=TRANSFER_REASON_OPTIONS),
+        COL_TRANSFER_OUT_DATE: st.column_config.DateColumn(COL_TRANSFER_OUT_DATE, format="DD-MMM-YYYY"),
+        COL_REJECT_DATE: st.column_config.DateColumn(COL_REJECT_DATE, format="DD-MMM-YYYY", help="Only applicable when the record is Rejected"),
+        COL_REMARKS: st.column_config.TextColumn(COL_REMARKS),
     }
     # Render the interactive Data Editor
     edited_df = st.data_editor(
@@ -397,53 +476,78 @@ if not df_live.empty:
         column_config=column_configuration,
         key="master_data_editor"
     )
-    # 4. Save Changes Engine (Pushes delta directly back to Google Sheets)
+
+    # 4. Save Changes Engine — looks up real column letters by header name, so it works
+    #    regardless of where these columns actually sit in your sheet.
     if "master_data_editor" in st.session_state and st.session_state["master_data_editor"]["edited_rows"]:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("💾 Save All Changes to Master Database", type="primary", use_container_width=True):
             with st.spinner("Writing updates securely to Google Sheets..."):
+                try:
+                    sheet_headers = new_sheet.row_values(1)
+                except Exception:
+                    sheet_headers = list(df_live.columns)
+                header_to_col = {h: i + 1 for i, h in enumerate(sheet_headers) if h}
+                episode_id_col = header_to_col.get('Episode ID', 8)
+
                 edited_rows_dict = st.session_state["master_data_editor"]["edited_rows"]
-                
+                warnings_list = []
+
                 for row_idx, changes in edited_rows_dict.items():
-                    # Map the edited row index back to the exact Episode ID
-                    ep_id = df_display.iloc[int(row_idx)]['Episode ID']
-                    
+                    current_row = df_display.iloc[int(row_idx)]
+                    ep_id = current_row['Episode ID']
+                    outcome_val = str(current_row.get('Treatment Outcome', '')).upper()
+
                     try:
-                        # Assuming Episode ID is in Column H (Index 8)
-                        cell = new_sheet.find(str(ep_id), in_column=8)
-                        
-                        # Get existing values, overwrite with any new changes made by the user
-                        current_row = df_display.iloc[int(row_idx)]
-                        addic_val = changes.get("Addiction", current_row.get("Addiction", ""))
-                        comorb_val = changes.get("Comorbidity", current_row.get("Comorbidity", ""))
-                        mig_val = changes.get("Migration", current_row.get("Migration", ""))
-                        rem_val = changes.get("Remarks", current_row.get("Remarks", ""))
-                        
-                        timestamp = datetime.now(india_tz).strftime("%d-%b-%Y %H:%M:%S")
-                        submitted_by = st.session_state.current_user
-                        
-                        # Target columns Q, R, S, T, U, V
-                        cells_to_update = new_sheet.range(f'Q{cell.row}:V{cell.row}')
-                        new_vals = [addic_val, comorb_val, mig_val, rem_val, submitted_by, timestamp]
-                        
-                        for i, val in enumerate(new_vals):
-                            cells_to_update[i].value = str(val) if val is not None else ""
-                        
-                        new_sheet.update_cells(cells_to_update)
-                        
+                        cell = new_sheet.find(str(ep_id), in_column=episode_id_col)
+
+                        def val_for(col):
+                            v = changes.get(col, current_row.get(col, ""))
+                            if isinstance(v, (pd.Timestamp,)) or hasattr(v, "strftime"):
+                                return v.strftime("%d-%b-%Y") if v else ""
+                            return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+
+                        field_values = {col: val_for(col) for col in editable_cols}
+                        field_values[COL_SUBMITTED_BY] = st.session_state.current_user
+                        field_values[COL_LAST_UPDATED] = datetime.now(india_tz).strftime("%d-%b-%Y %H:%M:%S")
+
+                        # Soft validation — conditional fields
+                        if field_values.get(COL_PLACE_OF_DEATH, "") and "DIED" not in outcome_val and "DEATH" not in outcome_val:
+                            warnings_list.append(f"Episode {ep_id}: Place of Death was filled but Treatment Outcome isn't Died.")
+                        if field_values.get(COL_REJECT_DATE, "") and "REJECT" not in outcome_val:
+                            warnings_list.append(f"Episode {ep_id}: Reject Date was filled but Treatment Outcome isn't Rejected.")
+
+                        updates = []
+                        for col, val in field_values.items():
+                            col_idx = header_to_col.get(col)
+                            if not col_idx:
+                                continue
+                            letter = colnum_to_letter(col_idx)
+                            updates.append({"range": f"{letter}{cell.row}", "values": [[val]]})
+                        if updates:
+                            new_sheet.batch_update(updates)
+
                     except Exception as e:
-                        st.error(f"❌ Failed to update Episode ID {ep_id}. Ensure the ID exists in Column H. Error: {e}")
-                
+                        st.error(f"❌ Failed to update Episode ID {ep_id}. Ensure the ID exists in the Episode ID column. Error: {e}")
+
                 st.success("✅ All field data successfully saved to the Master Sheet!")
-                get_live_tracker.clear() # Clears cache to fetch fresh data
+                for w in warnings_list:
+                    st.warning(f"⚠️ {w}")
+                get_live_tracker.clear()  # Clears cache to fetch fresh data
                 st.rerun()
 
     # ==========================================
-    # 🧷 MULTI-CONDITION ENTRY (select MULTIPLE Addictions / Comorbidities for one record)
+    # 🧷 COMORBIDITY (MULTI-SELECT) ENTRY
     # ==========================================
     st.markdown("<hr style='border: 1px solid #e2e8f0; margin: 30px 0 20px 0;'>", unsafe_allow_html=True)
-    st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Multi-Condition Entry</h3>", unsafe_allow_html=True)
-    st.markdown("<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Use this when one patient has <b>more than one</b> Addiction or Comorbidity — for example both <b>HIV</b> and <b>Diabetes</b>. Pick the Episode ID, tick every condition that applies, and save. This writes directly to the same row as the table above.</div>", unsafe_allow_html=True)
+    st.markdown("<h3 style='color: #0A3A6E; font-weight: 800;'>Comorbidity (Multi-Select) Entry</h3>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size: 14px; margin-bottom:15px; color:#555;'>Streamlit's table can't do a checkbox-style "
+        "multi-select inside one cell (unlike Google Sheets), so use this form instead when a patient has "
+        "<b>more than one</b> comorbidity — for example both <b>HIV/AIDS</b> and <b>Diabetes</b>. Pick the Episode ID, "
+        "tick every condition that applies, and save. This updates the same row shown in the table above.</div>",
+        unsafe_allow_html=True
+    )
 
     if 'Episode ID' in df_display.columns and len(df_display) > 0:
         ep_options = df_display['Episode ID'].astype(str).tolist()
@@ -452,56 +556,42 @@ if not df_live.empty:
         sel_row = df_display[df_display['Episode ID'].astype(str) == str(sel_ep)]
         if not sel_row.empty:
             sel_row = sel_row.iloc[0]
-            existing_addiction = [x.strip() for x in str(sel_row.get("Addiction", "")).split(",") if x.strip()]
-            existing_comorbidity = [x.strip() for x in str(sel_row.get("Comorbidity", "")).split(",") if x.strip()]
-            existing_migration = str(sel_row.get("Migration", ""))
-            existing_remarks = str(sel_row.get("Remarks", ""))
+            existing_comorbidity = split_multi(sel_row.get(COL_COMORBIDITY, ""))
 
-            addiction_opts = ["Alcohol", "Tobacco", "Other", "None"]
-            comorbidity_opts = ["Diabetes", "HIV", "Hypertension", "Other", "None"]
-            migration_opts = ["", "YES - Native outside Ahmedabad", "NO - Local Resident"]
+            sel_comorbidity = st.multiselect(
+                "Comorbidity (select all that apply)", COMORBIDITY_OPTIONS,
+                default=[c for c in existing_comorbidity if c in COMORBIDITY_OPTIONS],
+                key="multi_entry_comorbidity"
+            )
 
-            m1, m2 = st.columns(2)
-            with m1:
-                sel_addiction = st.multiselect(
-                    "Addiction (select all that apply)", addiction_opts,
-                    default=[a for a in existing_addiction if a in addiction_opts],
-                    key="multi_entry_addiction"
-                )
-            with m2:
-                sel_comorbidity = st.multiselect(
-                    "Comorbidity (select all that apply)", comorbidity_opts,
-                    default=[c for c in existing_comorbidity if c in comorbidity_opts],
-                    key="multi_entry_comorbidity"
-                )
-            m3, m4 = st.columns(2)
-            with m3:
-                mig_default_idx = migration_opts.index(existing_migration) if existing_migration in migration_opts else 0
-                sel_migration = st.selectbox("Migration Status", migration_opts, index=mig_default_idx, key="multi_entry_migration")
-            with m4:
-                sel_remarks = st.text_input("Remarks", value=existing_remarks, key="multi_entry_remarks")
-
-            if st.button("💾 Save Multi-Condition Entry", type="primary", use_container_width=True, key="multi_entry_save"):
+            if st.button("💾 Save Comorbidity Entry", type="primary", use_container_width=True, key="multi_entry_save"):
                 with st.spinner("Writing updates securely to Google Sheets..."):
                     try:
-                        cell = new_sheet.find(str(sel_ep), in_column=8)
-                        timestamp = datetime.now(india_tz).strftime("%d-%b-%Y %H:%M:%S")
-                        submitted_by = st.session_state.current_user
+                        sheet_headers = new_sheet.row_values(1)
+                        header_to_col = {h: i + 1 for i, h in enumerate(sheet_headers) if h}
+                        episode_id_col = header_to_col.get('Episode ID', 8)
+                        cell = new_sheet.find(str(sel_ep), in_column=episode_id_col)
 
-                        addic_val = ", ".join(sel_addiction)
-                        comorb_val = ", ".join(sel_comorbidity)
-
-                        cells_to_update = new_sheet.range(f'Q{cell.row}:V{cell.row}')
-                        new_vals = [addic_val, comorb_val, sel_migration, sel_remarks, submitted_by, timestamp]
-                        for i, val in enumerate(new_vals):
-                            cells_to_update[i].value = str(val) if val is not None else ""
-                        new_sheet.update_cells(cells_to_update)
+                        field_values = {
+                            COL_COMORBIDITY: ", ".join(sel_comorbidity),
+                            COL_SUBMITTED_BY: st.session_state.current_user,
+                            COL_LAST_UPDATED: datetime.now(india_tz).strftime("%d-%b-%Y %H:%M:%S"),
+                        }
+                        updates = []
+                        for col, val in field_values.items():
+                            col_idx = header_to_col.get(col)
+                            if not col_idx:
+                                continue
+                            letter = colnum_to_letter(col_idx)
+                            updates.append({"range": f"{letter}{cell.row}", "values": [[val]]})
+                        if updates:
+                            new_sheet.batch_update(updates)
 
                         st.success(f"✅ Episode ID {sel_ep} updated successfully!")
                         get_live_tracker.clear()
                         st.rerun()
                     except Exception as e:
-                        st.error(f"❌ Failed to update Episode ID {sel_ep}. Ensure the ID exists in Column H. Error: {e}")
+                        st.error(f"❌ Failed to update Episode ID {sel_ep}. Ensure the ID exists in the Episode ID column. Error: {e}")
     else:
         st.info("ℹ️ No Episode IDs available for the current filter.")
 else:
