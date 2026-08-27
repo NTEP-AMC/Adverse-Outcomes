@@ -5,7 +5,7 @@ import os
 import io
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import gspread
 from google.oauth2.service_account import Credentials
@@ -27,6 +27,31 @@ def img_to_b64(img_path):
         return ""
 
 
+def first_existing_b64(candidates):
+    """Try a list of possible filenames (in your repo root) and return the
+    base64 of the first one that exists. Returns "" if none are found."""
+    for name in candidates:
+        b64 = img_to_b64(name)
+        if b64:
+            return b64
+    return ""
+
+
+# Heritage images for the login page. If your GitHub repo uses different
+# filenames than these, either rename the files to match one of the
+# candidates below, or tell me the exact filenames and I'll update this list.
+JALI_CANDIDATES = [
+    "banner_sidi-saiyyad-jali_902.png", "banner_sidi-saiyyad-jali_902.jpg", "banner_sidi-saiyyad-jali_902.jpeg",
+    "sidi-saiyyad-jali.png", "sidi-saiyyad-jali.jpg", "sidi_saiyyad_jali.png", "sidi_saiyyad_jali.jpg",
+]
+RIVERFRONT_CANDIDATES = [
+    "ahmedabad_riverfront.png", "ahmedabad_riverfront.jpg", "ahmedabad_riverfront.jpeg",
+    "riverfront.png", "riverfront.jpg", "sabarmati_riverfront.png", "sabarmati_riverfront.jpg",
+]
+
+b64_jali = first_existing_b64(JALI_CANDIDATES)
+b64_riverfront = first_existing_b64(RIVERFRONT_CANDIDATES)
+
 if "auth" not in st.session_state:
     st.session_state.auth = False
     st.session_state.current_user = ""
@@ -42,26 +67,12 @@ except Exception:
 
 # ==========================================
 # 🎯 ROLE-BASED SCOPE FILTER
-# ------------------------------------------
-# THIS IS THE BUG FIX.
-# Previously, the KPI cards / breakdowns were calculated from the FULL,
-# unscoped dataframe, while only the table at the bottom of the page was
-# filtered down to the logged-in TB Unit / Zone. That's why a CTO login
-# and a TB Unit login showed different numbers in the table but identical
-# (organisation-wide) numbers in the KPI cards.
-#
-# Fix: scope the data ONCE, right after it's loaded, and use that single
-# scoped dataframe for absolutely everything below (KPIs, breakdowns,
-# the raw success/death-rate sheet, and the line-list table).
 # ==========================================
 TU_NAME_CANDIDATES = ["TB Unit", "TB UNIT", "TU NAME", "NAME OF TU", "TB UNIT NAME", "TU"]
 ZONE_NAME_CANDIDATES = ["ZONE", "Zone", "ZONE NAME"]
 
 
 def find_column(df, candidates):
-    """Return the first matching column name found in df (case/punctuation
-    insensitive), else None. No 'fallback by letter' guessing here on
-    purpose — guessing a scope column wrong is worse than not scoping."""
     if df is None or df.empty:
         return None
     cols_clean = {re.sub(r'[^A-Z0-9]', '', str(c).upper()): c for c in df.columns}
@@ -73,8 +84,6 @@ def find_column(df, candidates):
 
 
 def apply_scope_filter(df):
-    """Scope a dataframe down to the logged-in user's TB Unit / Zone.
-    CTO / Admin / Head roles see everything (no filter applied)."""
     if df is None or df.empty:
         return df, None
     role = st.session_state.role
@@ -93,7 +102,7 @@ def apply_scope_filter(df):
             return df[df[col].astype(str).str.upper().str.contains(zone_target, na=False)], col
         return df, "NOT_FOUND"
 
-    return df, None  # CTO / ADMIN / HEAD -> full access, nothing to scope
+    return df, None
 
 
 # ==========================================
@@ -102,23 +111,47 @@ def apply_scope_filter(df):
 if not st.session_state.auth:
     b64_amc = img_to_b64("amc.png")
 
-    st.markdown("""
+    riverfront_layer = (
+        f"linear-gradient(180deg, rgba(244,247,251,0.85) 0%, rgba(244,247,251,0.97) 100%), "
+        f"url('data:image/png;base64,{b64_riverfront}')"
+        if b64_riverfront else "none"
+    )
+    jali_layer = (
+        f"linear-gradient(160deg, rgba(10,58,110,0.90) 0%, rgba(18,74,138,0.80) 55%, rgba(10,58,110,0.92) 100%), "
+        f"url('data:image/png;base64,{b64_jali}')"
+        if b64_jali else "linear-gradient(160deg, #0A3A6E 0%, #124a8a 60%, #1a5aa8 100%)"
+    )
+
+    st.markdown(f"""
     <style>
-        #MainMenu, footer, header {visibility: hidden;}
-        .stApp {
-            background: radial-gradient(circle at 20% 20%, #123a6b 0%, #0a2748 45%, #071b34 100%);
-        }
-        .login-shell {
-            max-width: 880px;
-            margin: 6vh auto 0 auto;
-            border-radius: 22px;
+        #MainMenu, footer, header {{visibility: hidden;}}
+        html, body, [data-testid="stAppViewContainer"] {{
+            background: {riverfront_layer};
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+        }}
+        .gov-topbar {{
+            background: #0A3A6E; color: #dbeafe; text-align:center;
+            font-size: 12.5px; letter-spacing: 0.6px; font-weight: 600;
+            padding: 8px 0; text-transform: uppercase;
+            border-bottom: 3px solid #c9a227;
+        }}
+        .login-shell {{
+            max-width: 900px;
+            margin: 5vh auto 0 auto;
+            border-radius: 18px;
             overflow: hidden;
-            box-shadow: 0 25px 60px rgba(0,0,0,0.45);
+            box-shadow: 0 20px 50px rgba(15,23,42,0.18);
             display: flex;
-        }
-        .brand-panel {
-            flex: 0 0 40%;
-            background: linear-gradient(160deg, #0A3A6E 0%, #124a8a 60%, #1a5aa8 100%);
+            border: 1px solid #e2e8f0;
+        }}
+        .brand-panel {{
+            flex: 0 0 42%;
+            background: {jali_layer};
+            background-size: cover;
+            background-position: center;
+            filter: saturate(1.02);
             color: #fff;
             padding: 48px 32px;
             text-align: center;
@@ -126,39 +159,47 @@ if not st.session_state.auth:
             flex-direction: column;
             justify-content: center;
             align-items: center;
-        }
-        .brand-panel img {
+            min-height: 480px;
+        }}
+        .brand-panel img {{
             background: #fff;
             border-radius: 50%;
             padding: 8px;
-            box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
             margin-bottom: 22px;
-        }
-        .brand-panel h2 { font-size: 22px; font-weight: 700; margin: 0 0 6px 0; letter-spacing: 0.5px; }
-        .brand-panel p { font-size: 12.5px; color: #a9cdf2; line-height: 1.5; margin: 0; }
-        .brand-tag {
-            margin-top: 26px; font-size: 11px; color: #7fb3ec; border-top: 1px solid rgba(255,255,255,0.18);
+        }}
+        .brand-panel h2 {{ font-size: 23px; font-weight: 800; margin: 0 0 6px 0; letter-spacing: 0.5px; }}
+        .brand-panel p {{ font-size: 13px; color: #dbe9fb; line-height: 1.5; margin: 0; }}
+        .brand-tag {{
+            margin-top: 26px; font-size: 11.5px; color: #cfe1f7; border-top: 1px solid rgba(255,255,255,0.35);
             padding-top: 14px; width: 100%;
-        }
-        .form-panel {
+        }}
+        .form-panel {{
             flex: 1;
             background: #ffffff;
-            padding: 48px 44px;
-        }
-        .form-panel h3 { color: #0f172a; font-weight: 700; font-size: 22px; margin-bottom: 4px; }
-        .form-panel .sub { color: #64748b; font-size: 13px; margin-bottom: 22px; }
-        .stTextInput>div>div>input {
-            border-radius: 10px; border: 1.5px solid #dbe3ee; padding: 11px 14px; font-size: 14px;
-        }
-        .stTextInput>div>div>input:focus { border-color: #0A3A6E; box-shadow: 0 0 0 3px rgba(10,58,110,0.12); }
-        .stButton>button {
+            padding: 52px 46px;
+        }}
+        .form-panel h3 {{ color: #0f172a !important; font-weight: 800; font-size: 24px; margin-bottom: 4px; }}
+        .form-panel .sub {{ color: #475569 !important; font-size: 13.5px; margin-bottom: 26px; }}
+
+        /* Force visible, high-contrast labels regardless of theme */
+        [data-testid="stTextInput"] label, [data-testid="stTextInput"] label p {{
+            color: #1e293b !important; font-weight: 700 !important; font-size: 13.5px !important;
+        }}
+        .stTextInput>div>div>input {{
+            border-radius: 10px; border: 1.5px solid #cbd5e1; padding: 11px 14px; font-size: 14px;
+            color: #0f172a !important; background: #fff !important;
+        }}
+        .stTextInput>div>div>input:focus {{ border-color: #0A3A6E; box-shadow: 0 0 0 3px rgba(10,58,110,0.12); }}
+        .stButton>button {{
             background: linear-gradient(135deg, #0A3A6E 0%, #1a5aa8 100%);
-            color: white; border: none; border-radius: 10px; width: 100%;
-            font-weight: 600; padding: 12px; margin-top: 6px; letter-spacing: 0.3px;
+            color: white !important; border: none; border-radius: 10px; width: 100%;
+            font-weight: 700; padding: 12px; margin-top: 8px; letter-spacing: 0.3px;
             transition: transform 0.15s ease, box-shadow 0.15s ease;
-        }
-        .stButton>button:hover { transform: translateY(-1px); box-shadow: 0 10px 20px rgba(10,58,110,0.35); }
+        }}
+        .stButton>button:hover {{ transform: translateY(-1px); box-shadow: 0 10px 20px rgba(10,58,110,0.3); }}
     </style>
+    <div class="gov-topbar">Government of Gujarat &nbsp;·&nbsp; Ahmedabad Municipal Corporation &nbsp;·&nbsp; National TB Elimination Programme</div>
     """, unsafe_allow_html=True)
 
     st.markdown('<div class="login-shell">', unsafe_allow_html=True)
@@ -167,7 +208,7 @@ if not st.session_state.auth:
     with outer_l:
         st.markdown(f"""
         <div class="brand-panel">
-            <img src="data:image/png;base64,{b64_amc}" width="64">
+            <img src="data:image/png;base64,{b64_amc}" width="62">
             <h2>AMC · NTEP</h2>
             <p>Adverse Outcomes &amp; Field Entry Module</p>
             <div class="brand-tag">Ahmedabad Municipal Corporation<br>National TB Elimination Programme</div>
@@ -204,55 +245,83 @@ b64_ntep = img_to_b64("ntep.png")
 st.markdown("""
 <style>
     #MainMenu, footer, header {visibility: hidden;}
-    .stApp { background: #f4f7fb; }
+    html, body, [data-testid="stAppViewContainer"] { background: #F4F7FB !important; }
+    * { color: #0f172a; }
+
+    .gov-topbar {
+        background: #0A3A6E; color: #dbeafe; text-align:center;
+        font-size: 11.5px; letter-spacing: 0.6px; font-weight: 600;
+        padding: 6px 0; text-transform: uppercase; margin: -1rem -1rem 12px -1rem;
+        border-bottom: 3px solid #c9a227;
+    }
     .app-header {
         background: linear-gradient(120deg, #0A3A6E 0%, #124a8a 100%);
-        border-radius: 16px; padding: 18px 28px; margin-bottom: 16px;
+        border-radius: 14px; padding: 16px 26px; margin-bottom: 16px;
         display: flex; justify-content: space-between; align-items: center;
-        box-shadow: 0 10px 25px rgba(10,58,110,0.18);
+        box-shadow: 0 8px 20px rgba(10,58,110,0.15);
     }
-    .app-header h2 { margin:0; font-weight:800; color:#fff; font-size: 22px; letter-spacing: 0.4px; }
-    .app-header .subtitle { color:#a9cdf2; font-size: 12px; margin-top:2px; }
-    .app-header img { height: 56px; background:#fff; border-radius: 10px; padding: 4px; }
+    .app-header h2 { margin:0; font-weight:800; color:#fff !important; font-size: 21px; letter-spacing: 0.4px; }
+    .app-header .subtitle { color:#bcd7f5 !important; font-size: 12px; margin-top:2px; }
+    .app-header img { height: 52px; background:#fff; border-radius: 8px; padding: 4px; }
+
     .user-chip {
         display:inline-flex; align-items:center; gap:8px;
-        background: #e7f6ec; color:#166534; padding: 9px 16px; border-radius: 999px;
-        font-weight:600; font-size: 13px; margin-bottom: 18px; border: 1px solid #bbf0cc;
+        background: #e7f6ec; color:#166534 !important; padding: 9px 16px; border-radius: 999px;
+        font-weight:700; font-size: 13px; margin-bottom: 18px; border: 1px solid #bbf0cc;
     }
     .section-title {
-        color:#0f172a; font-weight:800; font-size:17px; margin: 6px 0 14px 0;
+        color:#0f172a !important; font-weight:800; font-size:17px; margin: 6px 0 14px 0;
         display:flex; align-items:center; gap:8px;
     }
+
+    /* ---- KPI CARDS: clean enterprise style, white with accent top border ---- */
     .kpi-card {
-        border-radius: 14px; padding: 20px 14px; text-align:center; height:100%;
-        display:flex; flex-direction:column; justify-content:center;
-        box-shadow: 0 10px 22px rgba(15,23,42,0.12);
-        color:#fff; position:relative; overflow:hidden;
+        background:#fff; border-radius: 12px; padding: 18px 16px 16px 16px; height:100%;
+        border: 1px solid #e7ecf3; border-top: 4px solid var(--accent, #0A3A6E);
+        box-shadow: 0 4px 14px rgba(15,23,42,0.06);
+        display:flex; flex-direction:column; gap: 6px;
     }
-    .kpi-icon { font-size: 20px; opacity:0.9; margin-bottom: 4px; }
-    .kpi-title { font-size: 11.5px; text-transform: uppercase; font-weight: 700; opacity: 0.9; letter-spacing:0.4px; }
-    .kpi-value { font-size: 30px; font-weight: 900; margin-top: 6px; }
-    .kpi-sub { font-size: 11px; color: rgba(255,255,255,0.85); margin-top: 8px; font-weight: 600; }
-    .kpi-years-wrap { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; margin-top: 8px; }
-    .kpi-year-chip { font-size: 10.5px; font-weight: 700; color: #000; background: #fff; border-radius: 5px; padding: 2px 6px; }
+    .kpi-top { display:flex; align-items:center; gap:10px; }
+    .kpi-icon-badge {
+        width:34px; height:34px; border-radius:9px; display:flex; align-items:center; justify-content:center;
+        font-size:16px; background: var(--accent-soft, #eef2ff); color: var(--accent, #0A3A6E);
+        flex-shrink:0;
+    }
+    .kpi-title { font-size: 11.5px; text-transform: uppercase; font-weight: 800; color:#64748b !important; letter-spacing:0.4px; }
+    .kpi-value { font-size: 30px; font-weight: 900; color:#0f172a !important; margin-top: 2px; }
+    .kpi-sub { font-size: 11.5px; color: #64748b !important; font-weight: 600; }
+    .kpi-years-wrap { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .kpi-year-chip { font-size: 10.5px; font-weight: 700; color: #334155 !important; background: #f1f5f9; border-radius: 5px; padding: 2px 6px; }
+
     .breakdown-card {
-        background: #fff; border-radius: 14px; padding: 16px 18px 18px 18px;
+        background: #fff; border-radius: 12px; padding: 16px 18px 18px 18px;
         border: 1px solid #e7ecf3; height:100%; max-height: 300px; overflow-y:auto;
-        box-shadow: 0 6px 16px rgba(15,23,42,0.05);
+        box-shadow: 0 4px 14px rgba(15,23,42,0.05);
     }
-    .breakdown-title { font-size: 13px; font-weight: 700; color: #1e293b; margin-bottom: 10px; }
-    .breakdown-row { display: flex; justify-content: space-between; font-size: 12px; color: #475569; margin-top: 8px; }
-    .breakdown-row b { color: #0f172a; }
+    .breakdown-title { font-size: 13px; font-weight: 800; color: #1e293b !important; margin-bottom: 10px; }
+    .breakdown-row { display: flex; justify-content: space-between; font-size: 12.5px; color: #475569 !important; margin-top: 8px; }
+    .breakdown-row b { color: #0f172a !important; }
     .progress-bg { background: #eef2f7; border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden; }
     .progress-fill { height: 100%; border-radius: 4px; }
-    .breakdown-empty { font-size: 12px; color: #94a3b8; font-style: italic; }
+    .breakdown-empty { font-size: 12px; color: #94a3b8 !important; font-style: italic; }
+
+    /* ---- FILTER STRIP: clearer, easier to use ---- */
     .filter-strip {
-        background:#fff; border:1px solid #e7ecf3; border-radius: 14px; padding: 16px 18px;
+        background:#fff; border:1px solid #e7ecf3; border-radius: 14px; padding: 18px 20px;
         margin-bottom: 16px; box-shadow: 0 4px 12px rgba(15,23,42,0.04);
     }
-    .filter-strip .label { font-size:13px; font-weight:700; color:#0A3A6E; margin-bottom:8px; }
+    .filter-strip .label { font-size:13.5px; font-weight:800; color:#0A3A6E !important; margin-bottom:10px; }
+    .filter-col-label { font-size: 12px; font-weight:700; color:#334155 !important; margin-bottom:4px; }
+
+    /* Force visible select / multiselect / label text everywhere */
+    label, .stSelectbox label, .stMultiSelect label, .stDateInput label {
+        color: #1e293b !important; font-weight: 600 !important;
+    }
+    [data-baseweb="select"] * { color: #0f172a !important; }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown('<div class="gov-topbar">Government of Gujarat · Ahmedabad Municipal Corporation · National TB Elimination Programme</div>', unsafe_allow_html=True)
 
 st.markdown(f"""
 <div class="app-header">
@@ -382,15 +451,44 @@ df_this_raw_full = load_kpi_data()
 df_this_raw, kpi_scope_col = apply_scope_filter(df_this_raw_full)
 
 # ==========================================
-# 📅 GLOBAL DATE FILTERS — values read early (widgets rendered later,
-# right above the line-list, per the requested layout change).
-# Reading from session_state via the same widget key means the KPI
-# numbers above still react instantly to date changes even though the
-# actual date-picker UI is drawn further down the page.
+# 📅 DATE FILTERS — QUICK PRESETS (easier than raw calendar range pickers)
+# Values are resolved from session_state early so KPIs above react
+# instantly, while the actual controls render lower, above the line-list.
 # ==========================================
-diag_dates = st.session_state.get("diag_date", [])
-init_dates = st.session_state.get("init_date", [])
-out_dates = st.session_state.get("out_date", [])
+DATE_PRESETS = ["All Time", "Today", "Last 7 Days", "Last 30 Days", "This Month", "This Year", "Custom Range"]
+
+
+def resolve_preset(preset, custom_range):
+    today = datetime.now(india_tz).date()
+    if preset == "Today":
+        return (today, today)
+    if preset == "Last 7 Days":
+        return (today - timedelta(days=6), today)
+    if preset == "Last 30 Days":
+        return (today - timedelta(days=29), today)
+    if preset == "This Month":
+        return (today.replace(day=1), today)
+    if preset == "This Year":
+        return (today.replace(month=1, day=1), today)
+    if preset == "Custom Range":
+        if custom_range and len(custom_range) == 2:
+            return (custom_range[0], custom_range[1])
+        elif custom_range and len(custom_range) == 1:
+            return (custom_range[0], custom_range[0])
+        return None
+    return None  # "All Time"
+
+
+diag_preset = st.session_state.get("diag_preset", "All Time")
+init_preset = st.session_state.get("init_preset", "All Time")
+out_preset = st.session_state.get("out_preset", "All Time")
+diag_custom = st.session_state.get("diag_custom", [])
+init_custom = st.session_state.get("init_custom", [])
+out_custom = st.session_state.get("out_custom", [])
+
+diag_range = resolve_preset(diag_preset, diag_custom)
+init_range = resolve_preset(init_preset, init_custom)
+out_range = resolve_preset(out_preset, out_custom)
 
 
 def parse_indian_dates(series):
@@ -420,21 +518,20 @@ if not df_live.empty:
 df_live_filtered = df_live.copy()
 
 
-def filter_by_date(df, col, d_range):
-    if len(d_range) == 2:
-        return df[(df[col].dt.date >= d_range[0]) & (df[col].dt.date <= d_range[1])]
-    elif len(d_range) == 1:
-        return df[df[col].dt.date == d_range[0]]
-    return df
+def filter_by_range(df, col, d_range):
+    if d_range is None:
+        return df
+    start, end = d_range
+    return df[(df[col].dt.date >= start) & (df[col].dt.date <= end)]
 
 
 if not df_live_filtered.empty:
-    if 'Diagnosis Date_dt' in df_live_filtered.columns and diag_dates:
-        df_live_filtered = filter_by_date(df_live_filtered, 'Diagnosis Date_dt', diag_dates)
-    if 'Initiation Date_dt' in df_live_filtered.columns and init_dates:
-        df_live_filtered = filter_by_date(df_live_filtered, 'Initiation Date_dt', init_dates)
-    if 'Outcome Date_dt' in df_live_filtered.columns and out_dates:
-        df_live_filtered = filter_by_date(df_live_filtered, 'Outcome Date_dt', out_dates)
+    if 'Diagnosis Date_dt' in df_live_filtered.columns:
+        df_live_filtered = filter_by_range(df_live_filtered, 'Diagnosis Date_dt', diag_range)
+    if 'Initiation Date_dt' in df_live_filtered.columns:
+        df_live_filtered = filter_by_range(df_live_filtered, 'Initiation Date_dt', init_range)
+    if 'Outcome Date_dt' in df_live_filtered.columns:
+        df_live_filtered = filter_by_range(df_live_filtered, 'Outcome Date_dt', out_range)
 
 total_adverse_count = len(df_live_filtered)
 
@@ -617,16 +714,18 @@ st.markdown("<div class='section-title'>📋 Detailed Breakdown of Adverse Outco
 breakdown_placeholder = st.container()
 
 
-def render_kpi_card(icon, label, value, sub="", years_str="", bg_color="#0A3A6E"):
+def render_kpi_card(icon, label, value, sub="", years_str="", accent="#0A3A6E", accent_soft="#eef2ff"):
     sub_html = f"<div class='kpi-sub'>{sub}</div>" if sub else ""
     years_html = ""
     if years_str:
         chips = "".join([f"<span class='kpi-year-chip'>{part.strip()}</span>" for part in years_str.split("|")])
         years_html = f"<div class='kpi-years-wrap'>{chips}</div>"
     return f"""
-    <div class="kpi-card" style="background: {bg_color};">
-        <div class="kpi-icon">{icon}</div>
-        <div class="kpi-title">{label}</div>
+    <div class="kpi-card" style="--accent:{accent}; --accent-soft:{accent_soft};">
+        <div class="kpi-top">
+            <div class="kpi-icon-badge">{icon}</div>
+            <div class="kpi-title">{label}</div>
+        </div>
         <div class="kpi-value">{value}</div>
         {sub_html}
         {years_html}
@@ -639,23 +738,23 @@ with kpi_placeholder:
     with k_col1:
         st.markdown(render_kpi_card("📊", "Total Adverse Outcomes", total_adverse_count,
                                      sub=f"{entry_completed_count} of {total_adverse_count} entries completed",
-                                     bg_color="linear-gradient(145deg,#0A3A6E,#124a8a)"), unsafe_allow_html=True)
+                                     accent="#0A3A6E", accent_soft="#e8eef7"), unsafe_allow_html=True)
     with k_col2:
         st.markdown(render_kpi_card("🏠", "Ahmedabad Residents", ahmedabad_pct_str,
                                      sub=f"{ahmedabad_count} of {total_adverse_count} records",
-                                     bg_color="linear-gradient(145deg,#1d4ed8,#3b6fef)"), unsafe_allow_html=True)
+                                     accent="#1d4ed8", accent_soft="#e8edfd"), unsafe_allow_html=True)
     with k_col3:
         st.markdown(render_kpi_card("✅", "Success Rate", success_overall_str, sub="Among eligible regimens",
                                      years_str=success_years_str,
-                                     bg_color="linear-gradient(145deg,#16a34a,#22c55e)"), unsafe_allow_html=True)
+                                     accent="#16a34a", accent_soft="#e8f8ee"), unsafe_allow_html=True)
     with k_col4:
         st.markdown(render_kpi_card("⚠️", "Initial Death Rate", init_death_overall_str,
                                      sub="Died before treatment initiation", years_str=init_death_years_str,
-                                     bg_color="linear-gradient(145deg,#f97316,#fb923c)"), unsafe_allow_html=True)
+                                     accent="#f97316", accent_soft="#fff1e6"), unsafe_allow_html=True)
     with k_col5:
         st.markdown(render_kpi_card("💔", "Normal Death Rate", death_overall_str, sub="During treatment",
                                      years_str=death_years_str,
-                                     bg_color="linear-gradient(145deg,#dc2626,#ef4444)"), unsafe_allow_html=True)
+                                     accent="#dc2626", accent_soft="#fdeaea"), unsafe_allow_html=True)
 
 
 def render_breakdown_card(title, data_dict, total, accent):
@@ -697,19 +796,37 @@ with breakdown_placeholder:
 st.markdown("<hr style='border: none; border-top: 1px solid #e2e8f0; margin: 28px 0;'>", unsafe_allow_html=True)
 
 # ==========================================
-# 📝 LINE LIST SECTION — date filters now live directly above the table
+# 📝 LINE LIST SECTION — quick-pick date filters directly above the table
 # ==========================================
 st.markdown("<div class='section-title'>🗂️ Interactive Line List &amp; Field Data Entry</div>", unsafe_allow_html=True)
 
 st.markdown("<div class='filter-strip'>", unsafe_allow_html=True)
-st.markdown("<div class='label'>📅 Date Range Filters (affects totals &amp; breakdowns above)</div>", unsafe_allow_html=True)
+top_label_col, top_reset_col = st.columns([5, 1])
+with top_label_col:
+    st.markdown("<div class='label'>📅 Date Range Filters — pick a quick range, or choose Custom Range (affects totals &amp; breakdowns above)</div>", unsafe_allow_html=True)
+with top_reset_col:
+    if st.button("↺ Reset Filters", use_container_width=True):
+        for k in ["diag_preset", "init_preset", "out_preset", "diag_custom", "init_custom", "out_custom"]:
+            if k in st.session_state:
+                del st.session_state[k]
+        st.rerun()
+
 d1, d2, d3 = st.columns(3)
 with d1:
-    st.date_input("Spectrum Diagnosis Date", value=diag_dates, key="diag_date")
+    st.markdown("<div class='filter-col-label'>Spectrum Diagnosis Date</div>", unsafe_allow_html=True)
+    sel_diag_preset = st.selectbox("Diagnosis preset", DATE_PRESETS, index=DATE_PRESETS.index(diag_preset), key="diag_preset", label_visibility="collapsed")
+    if sel_diag_preset == "Custom Range":
+        st.date_input("Pick diagnosis dates", value=diag_custom, key="diag_custom", label_visibility="collapsed")
 with d2:
-    st.date_input("Treatment Initiation Date", value=init_dates, key="init_date")
+    st.markdown("<div class='filter-col-label'>Treatment Initiation Date</div>", unsafe_allow_html=True)
+    sel_init_preset = st.selectbox("Initiation preset", DATE_PRESETS, index=DATE_PRESETS.index(init_preset), key="init_preset", label_visibility="collapsed")
+    if sel_init_preset == "Custom Range":
+        st.date_input("Pick initiation dates", value=init_custom, key="init_custom", label_visibility="collapsed")
 with d3:
-    st.date_input("Date of Treatment Outcome", value=out_dates, key="out_date")
+    st.markdown("<div class='filter-col-label'>Date of Treatment Outcome</div>", unsafe_allow_html=True)
+    sel_out_preset = st.selectbox("Outcome preset", DATE_PRESETS, index=DATE_PRESETS.index(out_preset), key="out_preset", label_visibility="collapsed")
+    if sel_out_preset == "Custom Range":
+        st.date_input("Pick outcome dates", value=out_custom, key="out_custom", label_visibility="collapsed")
 st.markdown("</div>", unsafe_allow_html=True)
 
 if not df_live_filtered.empty:
@@ -730,9 +847,8 @@ if not df_live_filtered.empty:
     df_display[COL_TRANSFER_OUT_DATE] = pd.to_datetime(df_display[COL_TRANSFER_OUT_DATE], errors='coerce', dayfirst=True)
     df_display[COL_REJECT_DATE] = pd.to_datetime(df_display[COL_REJECT_DATE], errors='coerce', dayfirst=True)
 
-    # NOTE: role scoping is already applied (see apply_scope_filter above),
-    # so there is no second TB Unit / Zone filter here anymore — that
-    # duplicate, out-of-sync filter was the source of the mismatch.
+    # Role scoping is already applied above (see apply_scope_filter), so
+    # there is no second TB Unit / Zone filter here.
 
     f1, f2, f3 = st.columns(3)
     with f1:
