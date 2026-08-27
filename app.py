@@ -716,7 +716,94 @@ with breakdown_placeholder:
         st.markdown(render_breakdown_card("Ahmedabad Residency (During Treatment)", residency_breakdown, total_adverse_count, accent="#2563eb"), unsafe_allow_html=True)
     with b3:
         st.markdown(render_breakdown_card("Adverse Outcomes Overview", outcome_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
+
 st.markdown("<hr style='border: none; border-top: 1px solid #e2e8f0; margin: 28px 0;'>", unsafe_allow_html=True)
+
+# ==========================================
+# 🚨 DISCOVER & AUTO-SYNC NEW ADVERSE OUTCOMES
+# ==========================================
+if st.session_state.role in ["ADMIN", "ZONE"]:
+    with st.expander("🚨 Discover & Auto-Sync New Adverse Outcomes", expanded=False):
+        st.markdown("<div style='font-size: 14px; margin-bottom:15px; color:#555;'>This engine scans the 'This Week' register against your current Master Database to automatically find and import new adverse outcomes.</div>", unsafe_allow_html=True)
+        
+        if not df_this_raw_full.empty and not df_live_raw.empty:
+            def get_col_series_sync(df, possible_names, fallback_idx):
+                for p in possible_names:
+                    p_clean = re.sub(r'[^A-Z0-9]', '', str(p).upper())
+                    for c in df.columns:
+                        c_clean = re.sub(r'[^A-Z0-9]', '', str(c).upper())
+                        if c_clean == p_clean:
+                            return df[c]
+                if fallback_idx < len(df.columns):
+                    return df.iloc[:, fallback_idx]
+                return pd.Series([""] * len(df))
+
+            out_series_sync = get_col_series_sync(df_this_raw_full, ['TREATMENT OUTCOME'], 62).fillna("").astype(str).str.upper().str.strip()
+            id_series_sync = get_col_series_sync(df_this_raw_full, ['EPISODE ID'], 12).fillna("").astype(str).str.strip()
+            
+            good_outcomes = ["CURED", "COMPLETE", "CHANGED", "SUCCESS", "WRONGLY"]
+            blank_variants = ["", "NAN", "N/A", "NONE", "(BLANKS)", "BLANK", "NULL"]
+            
+            is_adv_sync = ~out_series_sync.str.contains('|'.join(good_outcomes), na=False)
+            has_out_sync = ~out_series_sync.isin(blank_variants)
+            df_adv_this = df_this_raw_full[is_adv_sync & has_out_sync].copy()
+            df_adv_this = df_adv_this[get_col_series_sync(df_adv_this, ['EPISODE ID'], 12).fillna("").astype(str).str.strip() != ""]
+            
+            existing_ids = set(df_live_raw['Episode ID'].astype(str).str.strip().tolist()) if 'Episode ID' in df_live_raw.columns else set()
+            adv_this_ids = get_col_series_sync(df_adv_this, ['EPISODE ID'], 12).astype(str).str.strip()
+            new_adv_mask = ~adv_this_ids.isin(existing_ids)
+            df_new_adv = df_adv_this[new_adv_mask].copy()
+            
+            if df_new_adv.empty:
+                st.success("✅ Your Master Database is fully up to date! No new adverse outcomes found.")
+            else:
+                st.warning(f"⚠️ Found {len(df_new_adv)} new adverse outcomes that are missing from the Master Database.")
+                
+                upload_cols = df_live_raw.columns.tolist()
+                df_upload = pd.DataFrame(columns=upload_cols)
+                
+                if 'ADVERSE DATE' in upload_cols: df_upload['ADVERSE DATE'] = datetime.now(india_tz).strftime('%d %b %Y').upper()
+                if 'ZONE' in upload_cols: df_upload['ZONE'] = get_col_series_sync(df_new_adv, ['ZONE', 'CURRENT DISTRICT'], 43).values
+                if 'TB Unit' in upload_cols: df_upload['TB Unit'] = get_col_series_sync(df_new_adv, ['TB UNIT', 'CURRENT TU'], 2).values
+                if 'PHI (Current)' in upload_cols: df_upload['PHI (Current)'] = get_col_series_sync(df_new_adv, ['PHI', 'CURRENT PHI'], 4).values
+                if 'PHI (diagnosis)' in upload_cols: df_upload['PHI (diagnosis)'] = get_col_series_sync(df_new_adv, ['SPECTRUM DIAGNOSING PHI'], 9).values
+                if 'Facility Type' in upload_cols: df_upload['Facility Type'] = get_col_series_sync(df_new_adv, ['FACILITY TYPE', 'TYPE'], 3).values
+                if 'Patient Name' in upload_cols: df_upload['Patient Name'] = get_col_series_sync(df_new_adv, ['PATIENT NAME'], 13).values
+                if 'Episode ID' in upload_cols: df_upload['Episode ID'] = get_col_series_sync(df_new_adv, ['EPISODE ID'], 12).values
+                if 'AGE' in upload_cols: df_upload['AGE'] = get_col_series_sync(df_new_adv, ['AGE', 'PATIENT AGE'], 52).values
+                if 'Mobile No.' in upload_cols: df_upload['Mobile No.'] = get_col_series_sync(df_new_adv, ['PRIMARY PHONE', 'MOBILE NO'], 14).values
+                if 'REGIME' in upload_cols: df_upload['REGIME'] = get_col_series_sync(df_new_adv, ['TYPE OF TB REGIMEN', 'REGIMEN'], 61).values
+                if 'Diagnosis Date' in upload_cols: df_upload['Diagnosis Date'] = get_col_series_sync(df_new_adv, ['DIAGNOSIS DATE'], 18).values
+                if 'Initiation Date' in upload_cols: df_upload['Initiation Date'] = get_col_series_sync(df_new_adv, ['INITIATION DATE'], 64).values
+                if 'Outcome Date' in upload_cols: df_upload['Outcome Date'] = get_col_series_sync(df_new_adv, ['OUTCOME DATE'], 79).values
+                if 'Treatment Outcome' in upload_cols: df_upload['Treatment Outcome'] = get_col_series_sync(df_new_adv, ['TREATMENT OUTCOME'], 62).values
+                
+                for d_col in ['Diagnosis Date', 'Initiation Date', 'Outcome Date']:
+                    if d_col in df_upload.columns:
+                        parsed_d = parse_indian_dates(df_upload[d_col])
+                        df_upload[d_col] = parsed_d.dt.strftime('%d-%b-%Y').fillna("")
+
+                if 'On Treatment Days' in upload_cols and 'Initiation Date' in df_upload.columns and 'Outcome Date' in df_upload.columns:
+                    init_dt = pd.to_datetime(df_upload['Initiation Date'], errors='coerce')
+                    out_dt = pd.to_datetime(df_upload['Outcome Date'], errors='coerce')
+                    today_dt = pd.Timestamp.today(tz='Asia/Kolkata').tz_localize(None).normalize()
+                    df_upload['On Treatment Days'] = ((out_dt.fillna(today_dt) - init_dt).dt.days).apply(lambda x: f"{int(x)} Days" if pd.notna(x) else "")
+
+                df_upload = df_upload.fillna("")
+                
+                st.dataframe(df_upload, hide_index=True)
+                
+                if st.button("🚀 Push to Master Database", type="primary"):
+                    with st.spinner("Appending new outcomes to Google Sheets..."):
+                        try:
+                            values_list = df_upload.values.tolist()
+                            new_sheet.append_rows(values_list)
+                            st.success(f"✅ Successfully appended {len(values_list)} new outcomes!")
+                            get_live_tracker.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Failed to append rows: {e}")
+
 # ==========================================
 # 📝 LINE LIST SECTION — quick-pick date filters directly above the table
 # ==========================================
