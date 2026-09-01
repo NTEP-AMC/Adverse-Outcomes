@@ -476,6 +476,21 @@ def parse_indian_dates(series):
     if failed.any():
         parsed[failed] = pd.to_datetime(s[failed], errors='coerce')
     return parsed
+def compute_on_treatment_days_series(diag_series, init_series, out_series):
+    """On Treatment Days = Outcome Date minus (Initiation Date if present, else Diagnosis Date).
+    If Outcome Date is missing, uses today. Returns a Series of strings like '96 Days' or ''."""
+    n = len(out_series)
+    diag_dt = parse_indian_dates(diag_series) if diag_series is not None else pd.Series([pd.NaT] * n)
+    init_dt = parse_indian_dates(init_series) if init_series is not None else pd.Series([pd.NaT] * n)
+    out_dt = parse_indian_dates(out_series)
+    diag_dt = diag_dt.reset_index(drop=True)
+    init_dt = init_dt.reset_index(drop=True)
+    out_dt = out_dt.reset_index(drop=True)
+    start_dt = init_dt.fillna(diag_dt)  # Initiation Date wins; fall back to Diagnosis Date
+    today_dt = pd.Timestamp.today(tz='Asia/Kolkata').tz_localize(None).normalize()
+    end_dt = out_dt.fillna(today_dt)
+    days = (end_dt - start_dt).dt.days
+    return days.apply(lambda x: f"{int(x)} Days" if pd.notna(x) else "")
 if not df_live.empty:
     for c in ['Diagnosis Date', 'Initiation Date', 'Outcome Date']:
         if c in df_live.columns:
@@ -798,11 +813,12 @@ if st.session_state.role in PUSH_ALLOWED_ROLES:
                     if d_col in df_upload.columns:
                         parsed_d = parse_indian_dates(df_upload[d_col])
                         df_upload[d_col] = parsed_d.dt.strftime('%d-%b-%Y').fillna("")
-                if 'On Treatment Days' in upload_cols and 'Initiation Date' in df_upload.columns and 'Outcome Date' in df_upload.columns:
-                    init_dt = pd.to_datetime(df_upload['Initiation Date'], errors='coerce')
-                    out_dt = pd.to_datetime(df_upload['Outcome Date'], errors='coerce')
-                    today_dt = pd.Timestamp.today(tz='Asia/Kolkata').tz_localize(None).normalize()
-                    df_upload['On Treatment Days'] = ((out_dt.fillna(today_dt) - init_dt).dt.days).apply(lambda x: f"{int(x)} Days" if pd.notna(x) else "")
+                if 'On Treatment Days' in upload_cols and 'Outcome Date' in df_upload.columns:
+                    df_upload['On Treatment Days'] = compute_on_treatment_days_series(
+                        df_upload.get('Diagnosis Date'),
+                        df_upload.get('Initiation Date'),
+                        df_upload['Outcome Date']
+                    )
                 df_upload = df_upload.fillna("")
                 
                 # ---- Resolve ZONE using the "zone" mapping sub-sheet you added ----
@@ -926,6 +942,73 @@ if st.session_state.role in PUSH_ALLOWED_ROLES:
                             st.error(f"❌ Failed to update Zones: {e}")
         else:
             st.info("No ZONE column found in the Master Sheet to repair.")
+# ==========================================
+# 🛠️ REPAIR TOOL — backfill blank "On Treatment Days" in the Master Sheet
+# ==========================================
+if st.session_state.role in PUSH_ALLOWED_ROLES:
+    with st.expander("🛠️ Backfill Blank \"On Treatment Days\"", expanded=False):
+        st.markdown(
+            "<div style='font-size: 13px; margin-bottom:12px; color:#555;'>"
+            "Recalculates On Treatment Days as: <b>Initiation Date → Outcome Date</b>, or if Initiation Date "
+            "is blank (e.g. died before starting treatment), <b>Diagnosis Date → Outcome Date</b> instead.</div>",
+            unsafe_allow_html=True
+        )
+        needed_cols = ['On Treatment Days', 'Outcome Date']
+        if not df_live_raw.empty and all(c in df_live_raw.columns for c in needed_cols):
+            otd_raw = df_live_raw['On Treatment Days'].astype(str).str.strip()
+            broken_otd_mask = otd_raw.isin(["", "nan", "None", "0 Days"])
+            df_broken_otd = df_live_raw[broken_otd_mask].copy()
+            if df_broken_otd.empty:
+                st.success("✅ No blank On Treatment Days values found.")
+            else:
+                st.warning(f"Found {len(df_broken_otd)} row(s) with a blank On Treatment Days.")
+                new_vals = compute_on_treatment_days_series(
+                    df_broken_otd.get('Diagnosis Date'),
+                    df_broken_otd.get('Initiation Date'),
+                    df_broken_otd['Outcome Date']
+                )
+                df_otd_preview = pd.DataFrame({
+                    "Episode ID": df_broken_otd.get('Episode ID', pd.Series([""] * len(df_broken_otd))).values,
+                    "Diagnosis Date": df_broken_otd.get('Diagnosis Date', pd.Series([""] * len(df_broken_otd))).values,
+                    "Initiation Date": df_broken_otd.get('Initiation Date', pd.Series([""] * len(df_broken_otd))).values,
+                    "Outcome Date": df_broken_otd['Outcome Date'].values,
+                    "Computed On Treatment Days": new_vals.values,
+                })
+                st.dataframe(df_otd_preview, hide_index=True)
+                n_resolvable = int((new_vals != "").sum())
+                st.info(f"{n_resolvable} of {len(df_broken_otd)} can be auto-filled. The rest are missing both a usable start date and won't be touched.")
+                if n_resolvable > 0 and st.button("🔧 Apply Computed On Treatment Days to Master Sheet"):
+                    with st.spinner("Updating Master Sheet..."):
+                        try:
+                            sheet_headers = new_sheet.row_values(1)
+                            header_to_col = {h: i + 1 for i, h in enumerate(sheet_headers) if h}
+                            otd_col_idx = header_to_col.get('On Treatment Days')
+                            ep_col_idx = header_to_col.get('Episode ID', 8)
+                            if not otd_col_idx:
+                                st.error("Could not find an 'On Treatment Days' column header in the Master Sheet.")
+                            else:
+                                updates = []
+                                for (idx, row), new_val in zip(df_broken_otd.iterrows(), new_vals):
+                                    if not new_val:
+                                        continue
+                                    ep_id = str(row.get('Episode ID', '')).strip()
+                                    if not ep_id:
+                                        continue
+                                    cell = new_sheet.find(ep_id, in_column=ep_col_idx)
+                                    if cell:
+                                        letter = colnum_to_letter(otd_col_idx)
+                                        updates.append({"range": f"{letter}{cell.row}", "values": [[new_val]]})
+                                if updates:
+                                    new_sheet.batch_update(updates)
+                                    st.success(f"✅ Filled On Treatment Days for {len(updates)} row(s).")
+                                    get_live_tracker.clear()
+                                    st.rerun()
+                                else:
+                                    st.info("Nothing to update.")
+                        except Exception as e:
+                            st.error(f"❌ Failed to update On Treatment Days: {e}")
+        else:
+            st.info("Master Sheet is missing 'On Treatment Days' and/or 'Outcome Date' columns.")
 # ==========================================
 # 📝 LINE LIST SECTION — quick-pick date filters directly above the table
 # ==========================================
