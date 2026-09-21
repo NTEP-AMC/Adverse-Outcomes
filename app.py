@@ -10,24 +10,28 @@ import pytz
 import gspread
 from google.oauth2.service_account import Credentials
 import warnings
+
 warnings.filterwarnings("ignore")
 # ==========================================
 # ⚙️ PAGE CONFIG & AUTHENTICATION SETUP
 # ==========================================
 st.set_page_config(page_title="AMC NTEP - Adverse Outcomes", layout="wide", initial_sidebar_state="collapsed")
 india_tz = pytz.timezone('Asia/Kolkata')
+
 def img_to_b64(img_path):
     try:
         with open(img_path, "rb") as img_file:
             return base64.b64encode(img_file.read()).decode('utf-8')
     except Exception:
         return ""
+
 def first_existing_b64(candidates):
     for name in candidates:
         b64 = img_to_b64(name)
         if b64:
             return b64
     return ""
+
 JALI_CANDIDATES = [
     "banner_sidi-saiyyad-jali_902.png", "banner_sidi-saiyyad-jali_902.jpg", "banner_sidi-saiyyad-jali_902.jpeg",
     "sidi-saiyyad-jali.png", "sidi-saiyyad-jali.jpg", "sidi_saiyyad_jali.png", "sidi_saiyyad_jali.jpg",
@@ -38,22 +42,26 @@ RIVERFRONT_CANDIDATES = [
 ]
 b64_jali = first_existing_b64(JALI_CANDIDATES)
 b64_riverfront = first_existing_b64(RIVERFRONT_CANDIDATES)
+
 if "auth" not in st.session_state:
     st.session_state.auth = False
     st.session_state.current_user = ""
     st.session_state.role = ""
     st.session_state.target = ""
+
 try:
     df_users = pd.read_csv("users.csv")
     df_users['Username'] = df_users['Username'].astype(str).str.strip().str.upper()
 except Exception:
     st.error("⚠️ User Database (users.csv) not found in the repository!")
     st.stop()
+
 # ==========================================
 # 🎯 ROLE-BASED SCOPE FILTER
 # ==========================================
 TU_NAME_CANDIDATES = ["TB Unit", "TB UNIT", "TU NAME", "NAME OF TU", "TB UNIT NAME", "TU"]
 ZONE_NAME_CANDIDATES = ["ZONE", "Zone", "ZONE NAME"]
+
 def find_column(df, candidates):
     if df is None or df.empty:
         return None
@@ -63,6 +71,7 @@ def find_column(df, candidates):
         if key in cols_clean:
             return cols_clean[key]
     return None
+
 def apply_scope_filter(df):
     if df is None or df.empty:
         return df, None
@@ -80,6 +89,7 @@ def apply_scope_filter(df):
             return df[df[col].astype(str).str.upper().str.contains(zone_target, na=False)], col
         return df, "NOT_FOUND"
     return df, None
+
 # ==========================================
 # 🔐 LOGIN PAGE
 # ==========================================
@@ -198,6 +208,7 @@ if not st.session_state.auth:
             else:
                 st.error("⚠️ Invalid User ID or Password")
     st.stop()
+
 # ==========================================
 # 🟢 MAIN APPLICATION & DATABASE CONNECTIONS
 # ==========================================
@@ -232,7 +243,6 @@ st.markdown("""
         color:#0f172a !important; font-weight:800; font-size:17px; margin: 6px 0 14px 0;
         display:flex; align-items:center; gap:8px;
     }
-    /* ---- KPI CARDS: clean enterprise style, white with accent top border ---- */
     .kpi-card {
         background:#fff; border-radius: 12px; padding: 18px 16px 16px 16px; height:100%;
         border: 1px solid #e7ecf3; border-top: 4px solid var(--accent, #0A3A6E);
@@ -261,20 +271,19 @@ st.markdown("""
     .progress-bg { background: #eef2f7; border-radius: 4px; height: 6px; margin-top: 4px; overflow: hidden; }
     .progress-fill { height: 100%; border-radius: 4px; }
     .breakdown-empty { font-size: 12px; color: #94a3b8 !important; font-style: italic; }
-    /* ---- FILTER STRIP: clearer, easier to use ---- */
     .filter-strip {
         background:#fff; border:1px solid #e7ecf3; border-radius: 14px; padding: 18px 20px;
         margin-bottom: 16px; box-shadow: 0 4px 12px rgba(15,23,42,0.04);
     }
     .filter-strip .label { font-size:13.5px; font-weight:800; color:#0A3A6E !important; margin-bottom:10px; }
     .filter-col-label { font-size: 12px; font-weight:700; color:#334155 !important; margin-bottom:4px; }
-    /* Force visible select / multiselect / label text everywhere */
     label, .stSelectbox label, .stMultiSelect label, .stDateInput label {
         color: #1e293b !important; font-weight: 600 !important;
     }
     [data-baseweb="select"] * { color: #0f172a !important; }
 </style>
 """, unsafe_allow_html=True)
+
 st.markdown('<div class="gov-topbar">Government of Gujarat · Ahmedabad Municipal Corporation · National TB Elimination Programme</div>', unsafe_allow_html=True)
 st.markdown(f"""
 <div class="app-header">
@@ -287,23 +296,25 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 st.markdown(f"<div class='user-chip'>👤 Logged in as: {st.session_state.target} &nbsp;·&nbsp; {st.session_state.role}</div>", unsafe_allow_html=True)
+
 @st.cache_resource
 def init_gspread():
     creds_dict = json.loads(st.secrets["google_credentials"])
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(creds)
+
 client = init_gspread()
 NEW_SHEET_URL = "https://docs.google.com/spreadsheets/d/11JHb7Zv4KqV_PAY9REGBVdkLwqBSubvgtSrr1ulGRzA/edit"
+
 try:
     new_sheet = client.open_by_url(NEW_SHEET_URL).sheet1
 except Exception:
     st.error("Could not connect to the New Google Sheet. Check credentials.")
     st.stop()
+
 # ---------------------------------------------------------
 # 🗺️ ZONE LOOKUP  (reads the "zone" sub-sheet you added: Name of PHI | Zone | UHC | TU)
-# Used to reliably resolve ZONE for new adverse outcomes instead of guessing
-# columns from the weekly register, which was producing blank/"0" zones.
 # ---------------------------------------------------------
 ZONE_LOOKUP_SHEET_NAME = "zone"
 @st.cache_data(ttl=300, show_spinner=False)
@@ -334,11 +345,8 @@ def load_zone_lookup():
             if uhc_val and zone_val:
                 uhc_to_tu_zone.setdefault(uhc_val, (tu_val, zone_val))
     return tu_to_zone, uhc_to_tu_zone
+
 def resolve_zone_for_row(existing_zone, tb_unit_val, phi_current_val, tu_to_zone, uhc_to_tu_zone):
-    """Best-effort ZONE resolver: keeps a genuinely valid existing zone, otherwise
-    matches TB Unit against the zone-sheet TU column, then falls back to matching
-    PHI (Current) against the zone-sheet UHC column. Returns "" if nothing matches
-    (never fabricates a fake value like "0")."""
     ez = str(existing_zone).strip()
     if ez and ez.upper() not in ("0", "0.0", "NAN", "NONE", "NAT", "<NA>", ""):
         return ez
@@ -349,13 +357,16 @@ def resolve_zone_for_row(existing_zone, tb_unit_val, phi_current_val, tu_to_zone
     if phi_key in uhc_to_tu_zone:
         return uhc_to_tu_zone[phi_key][1]
     return ""
+
 @st.cache_data(ttl=10, show_spinner="Syncing Live Data Tracker...")
 def get_live_tracker():
     try:
         return pd.DataFrame(new_sheet.get_all_records())
     except Exception:
         return pd.DataFrame()
+
 df_live_raw = get_live_tracker()
+
 # ---------------------------------------------------------
 # 🧮 FIELD DATA COLUMN CONSTANTS
 # ---------------------------------------------------------
@@ -371,13 +382,15 @@ COL_REJECT_DATE         = "Reject Date (If Rejected)"
 COL_REMARKS             = "Remarks"
 COL_SUBMITTED_BY        = "Submitted By"
 COL_LAST_UPDATED        = "Last Updated"
+
 REQUIRED_ENTRY_COLS = [
     COL_MONTHS_RESIDING, COL_RESIDED_THROUGHOUT, COL_PLACE_OF_DEATH, COL_COMORBIDITY,
     COL_STATE_NON_AMC, COL_DISTRICT_NON_AMC, COL_TRANSFER_REASON,
     COL_TRANSFER_OUT_DATE, COL_REJECT_DATE, COL_REMARKS,
 ]
+
 # ---------------------------------------------------------
-# 🧹 SMART DATA CLEANER (Translates Gujarati to English & Normalizes Time)
+# 🧹 SMART DATA CLEANER
 # ---------------------------------------------------------
 def parse_gujarati_time(val):
     if pd.isna(val): return pd.NA
@@ -390,19 +403,22 @@ def parse_gujarati_time(val):
     num = float(nums[0])
     if any(k in val_str for k in ['year', 'yr', 'વર્ષ', 'સાલ', 'varsh', 'sal']): return int(num * 12)
     else: return int(num)
+
 def clean_resided(val):
     if pd.isna(val): return ""
     val_str = str(val).strip().upper()
     if val_str in ['હા', 'HA', 'YES']: return 'YES'
     if val_str in ['ના', 'NA', 'NO']: return 'NO'
     return val_str
+
 if not df_live_raw.empty:
     if COL_MONTHS_RESIDING in df_live_raw.columns:
         df_live_raw[COL_MONTHS_RESIDING] = df_live_raw[COL_MONTHS_RESIDING].apply(parse_gujarati_time)
     if COL_RESIDED_THROUGHOUT in df_live_raw.columns:
         df_live_raw[COL_RESIDED_THROUGHOUT] = df_live_raw[COL_RESIDED_THROUGHOUT].apply(clean_resided)
+
 # ==========================================
-# 🎯 APPLY ROLE SCOPE  (once, for everything downstream)
+# 🎯 APPLY ROLE SCOPE
 # ==========================================
 df_live, tu_scope_col = apply_scope_filter(df_live_raw)
 scope_col_missing = (tu_scope_col == "NOT_FOUND")
@@ -411,7 +427,8 @@ if scope_col_missing:
         "⚠️ Could not find a TB Unit/Zone column in the live tracker sheet to scope this login to. "
         "Showing all records instead — please confirm the exact column header name so scoping can be applied."
     )
-# 🚀 RESTORED DELTA ENGINE LOADER
+
+# 🚀 DELTA ENGINE LOADER
 @st.cache_data(ttl=600, show_spinner="Fetching This & Previous Week Registers...")
 def load_source_data():
     import urllib.request
@@ -424,16 +441,20 @@ def load_source_data():
         except Exception:
             return pd.DataFrame()
     return fetch("1898426568"), fetch("1981365704")
+
 df_this_raw_full, df_prev_raw_full = load_source_data()
 df_this_raw, kpi_scope_col = apply_scope_filter(df_this_raw_full)
+
 # ==========================================
 # 📅 DATE FILTERS — QUICK PRESETS + MONTH-JUMP PICKER
 # ==========================================
 DATE_PRESETS = ["All Time", "Today", "Last 7 Days", "Last 30 Days", "This Month", "This Year", "Jump to Month", "Custom Range"]
+
 def shift_month(d, delta):
     total = d.year * 12 + (d.month - 1) + delta
     y, m = divmod(total, 12)
     return d.replace(year=y, month=m + 1, day=1)
+
 def resolve_preset(preset, custom_range, month_anchor=None):
     today = datetime.now(india_tz).date()
     if preset == "Today": return (today, today)
@@ -450,6 +471,7 @@ def resolve_preset(preset, custom_range, month_anchor=None):
         elif custom_range and len(custom_range) == 1: return (custom_range[0], custom_range[0])
         return None
     return None
+
 diag_preset = st.session_state.get("diag_preset", "All Time")
 init_preset = st.session_state.get("init_preset", "All Time")
 out_preset = st.session_state.get("out_preset", "All Time")
@@ -463,22 +485,45 @@ out_month = st.session_state.get("out_month_anchor", today_first)
 diag_range = resolve_preset(diag_preset, diag_custom, diag_month)
 init_range = resolve_preset(init_preset, init_custom, init_month)
 out_range = resolve_preset(out_preset, out_custom, out_month)
+
+# ---------------------------------------------------------
+# 🚀 SMART INDIAN DATE PARSER (FIXED YY/DD/MM)
+# ---------------------------------------------------------
 def parse_indian_dates(series):
     def fix_date_string(x):
-        if pd.isna(x) or x in ['nan', 'NaN', 'None', '<NA>', '']: return pd.NA
+        if pd.isna(x) or str(x).strip() in ['nan', 'NaN', 'None', '<NA>', '']: return pd.NA
         x = str(x).strip()
         if re.match(r'^[A-Za-z]{3}[-/]\d{2}$', x): return f"01-{x[:3]}-20{x[-2:]}"
         if re.match(r'^[A-Za-z]{3}[-/]\d{4}$', x): return f"01-{x[:3]}-{x[-4:]}"
-        return x
+        return x.replace('/', '-')
+        
     s = series.apply(fix_date_string)
-    parsed = pd.to_datetime(s, dayfirst=True, errors='coerce')
-    failed = parsed.isna() & s.notna()
-    if failed.any():
-        parsed[failed] = pd.to_datetime(s[failed], errors='coerce')
+    parsed = pd.Series(pd.NaT, index=s.index)
+    
+    # 1. Try YY-DD-MM (Specific User format)
+    mask_remaining = parsed.isna() & s.notna()
+    if mask_remaining.any():
+        parsed[mask_remaining] = pd.to_datetime(s[mask_remaining], format='%y-%d-%m', errors='coerce')
+        
+    # 2. Try YY-MM-DD
+    mask_remaining = parsed.isna() & s.notna()
+    if mask_remaining.any():
+        parsed[mask_remaining] = pd.to_datetime(s[mask_remaining], format='%y-%m-%d', errors='coerce')
+
+    # 3. Handle YYYY-MM-DD / YYYY-DD-MM (4 digit year first)
+    mask_yyyy = s.astype(str).str.match(r'^\d{4}-')
+    mask_remaining = parsed.isna() & mask_yyyy & s.notna()
+    if mask_remaining.any():
+        parsed[mask_remaining] = pd.to_datetime(s[mask_remaining], yearfirst=True, errors='coerce')
+
+    # 4. Standard Indian DD-MM-YYYY fallback for anything else
+    mask_remaining = parsed.isna() & s.notna()
+    if mask_remaining.any():
+        parsed[mask_remaining] = pd.to_datetime(s[mask_remaining], dayfirst=True, errors='coerce')
+        
     return parsed
+
 def compute_on_treatment_days_series(diag_series, init_series, out_series):
-    """On Treatment Days = Outcome Date minus (Initiation Date if present, else Diagnosis Date).
-    If Outcome Date is missing, uses today. Returns a Series of strings like '96 Days' or ''."""
     n = len(out_series)
     diag_dt = parse_indian_dates(diag_series) if diag_series is not None else pd.Series([pd.NaT] * n)
     init_dt = parse_indian_dates(init_series) if init_series is not None else pd.Series([pd.NaT] * n)
@@ -486,24 +531,29 @@ def compute_on_treatment_days_series(diag_series, init_series, out_series):
     diag_dt = diag_dt.reset_index(drop=True)
     init_dt = init_dt.reset_index(drop=True)
     out_dt = out_dt.reset_index(drop=True)
-    start_dt = init_dt.fillna(diag_dt)  # Initiation Date wins; fall back to Diagnosis Date
+    start_dt = init_dt.fillna(diag_dt) 
     today_dt = pd.Timestamp.today(tz='Asia/Kolkata').tz_localize(None).normalize()
     end_dt = out_dt.fillna(today_dt)
     days = (end_dt - start_dt).dt.days
     return days.apply(lambda x: f"{int(x)} Days" if pd.notna(x) else "")
+
 if not df_live.empty:
     for c in ['Diagnosis Date', 'Initiation Date', 'Outcome Date']:
         if c in df_live.columns:
             df_live[c + '_dt'] = parse_indian_dates(df_live[c])
+
 df_live_filtered = df_live.copy()
+
 def filter_by_range(df, col, d_range):
     if d_range is None: return df
     start, end = d_range
     return df[(df[col].dt.date >= start) & (df[col].dt.date <= end)]
+
 if not df_live_filtered.empty:
     if 'Diagnosis Date_dt' in df_live_filtered.columns: df_live_filtered = filter_by_range(df_live_filtered, 'Diagnosis Date_dt', diag_range)
     if 'Initiation Date_dt' in df_live_filtered.columns: df_live_filtered = filter_by_range(df_live_filtered, 'Initiation Date_dt', init_range)
     if 'Outcome Date_dt' in df_live_filtered.columns: df_live_filtered = filter_by_range(df_live_filtered, 'Outcome Date_dt', out_range)
+
 # ==========================================
 # 🎯 ZONE / OUTCOME / ENTRY-STATUS QUICK FILTERS
 # ==========================================
@@ -511,22 +561,26 @@ df_options_source = df_live_filtered.copy()
 sel_out_val = st.session_state.get("linelist_outcome_filter", [])
 sel_zone_val = st.session_state.get("linelist_zone_filter", [])
 entry_status_val = st.session_state.get("linelist_entry_status", "All")
+
 if sel_out_val and 'Treatment Outcome' in df_live_filtered.columns: df_live_filtered = df_live_filtered[df_live_filtered['Treatment Outcome'].isin(sel_out_val)]
 if sel_zone_val and 'ZONE' in df_live_filtered.columns: df_live_filtered = df_live_filtered[df_live_filtered['ZONE'].isin(sel_zone_val)]
 if entry_status_val == "Pending Entry" and COL_RESIDED_THROUGHOUT in df_live_filtered.columns: df_live_filtered = df_live_filtered[df_live_filtered[COL_RESIDED_THROUGHOUT].astype(str).str.strip() == ""]
 elif entry_status_val == "Completed" and COL_RESIDED_THROUGHOUT in df_live_filtered.columns: df_live_filtered = df_live_filtered[df_live_filtered[COL_RESIDED_THROUGHOUT].astype(str).str.strip() != ""]
 total_adverse_count = len(df_live_filtered)
+
 # ---------------------------------------------------------
-# 🧮 CALCULATION ENGINE: YEAR-WISE SUCCESS & DEATH RATES (UNAFFECTED BY DATES)
+# 🧮 CALCULATION ENGINE: YEAR-WISE SUCCESS & DEATH RATES 
 # ---------------------------------------------------------
 success_overall_str, success_years_str = "0%", ""
 death_overall_str, death_years_str = "0%", ""
 init_death_overall_str, init_death_years_str = "0%", ""
+
 if not df_this_raw.empty:
     def cx(col_letter):
         num = 0
         for c in col_letter.upper(): num = num * 26 + (ord(c) - ord('A') + 1)
         return num - 1
+
     def get_col_series(df, possible_names, fallback_col_letter):
         for p in possible_names:
             p_clean = re.sub(r'[^A-Z0-9]', '', str(p).upper())
@@ -536,23 +590,26 @@ if not df_this_raw.empty:
         idx = cx(fallback_col_letter)
         if idx < len(df.columns): return df.iloc[:, idx]
         return pd.Series([""] * len(df))
+
     ep_series = get_col_series(df_this_raw, ['EPISODE ID'], 'M').fillna("").astype(str).str.strip()
     regimen_series = get_col_series(df_this_raw, ['TYPE OF TB REGIMEN'], 'BJ').fillna("").astype(str).str.upper()
     outcome_series = get_col_series(df_this_raw, ['TREATMENT OUTCOME'], 'BK').fillna("").astype(str).str.upper().str.strip()
     diag_series_raw = get_col_series(df_this_raw, ['DIAGNOSIS DATE'], 'S').fillna("").astype(str).str.strip()
     init_series_raw = get_col_series(df_this_raw, ['INITIATION DATE'], 'BM').fillna("").astype(str).str.strip()
     out_date_series_raw = get_col_series(df_this_raw, ['OUTCOME DATE'], 'CB').fillna("").astype(str).str.strip()
+
     df_calc = pd.DataFrame({
         'Valid': ~ep_series.isin(["", "NAN", "NONE", "NULL", "N/A"]),
         'Regimen_Eligible': regimen_series.str.contains("2HRZE/4HRE|2HRZES|4HRE|2HRZE", regex=True, na=False),
         'Is_Success': outcome_series.str.contains("COMPLETE|CURED", regex=True, na=False),
         'Is_Death': outcome_series.str.contains("DIED|DEATH", regex=True, na=False),
-        'Init_Year': pd.to_datetime(init_series_raw, errors='coerce').dt.year,
-        'Diag_Year': pd.to_datetime(diag_series_raw, errors='coerce').dt.year,
+        'Init_Year': parse_indian_dates(init_series_raw).dt.year,
+        'Diag_Year': parse_indian_dates(diag_series_raw).dt.year,
         'Has_Diag': diag_series_raw != "",
         'Has_OutDate': out_date_series_raw != "",
         'No_Init': init_series_raw == ""
     })
+
     df_calc_init = df_calc[df_calc['Valid'] & df_calc['Regimen_Eligible']].copy()
     total_eligible = len(df_calc_init)
     
@@ -563,6 +620,7 @@ if not df_this_raw.empty:
         grp_death = df_calc_init.groupby('Init_Year')['Is_Death'].agg(['sum', 'count'])
         success_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_succ.iterrows() if pd.notna(y) and r['count'] > 0])
         death_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_death.iterrows() if pd.notna(y) and r['count'] > 0])
+
     df_calc_diag = df_calc[df_calc['Valid']].copy()
     df_calc_diag['Is_Initial_Death'] = df_calc_diag['Has_Diag'] & df_calc_diag['Has_OutDate'] & df_calc_diag['No_Init'] & df_calc_diag['Is_Death']
     
@@ -571,8 +629,9 @@ if not df_this_raw.empty:
         init_death_overall_str = f"{(df_calc_diag['Is_Initial_Death'].sum() / total_diag * 100):.1f}%"
         grp_init = df_calc_diag.groupby('Diag_Year')['Is_Initial_Death'].agg(['sum', 'count'])
         init_death_years_str = " | ".join([f"{int(y)}: {(r['sum']/r['count']*100):.1f}%" for y, r in grp_init.iterrows() if pd.notna(y) and r['count'] > 0])
+
 # ---------------------------------------------------------
-# 🧮 AHMEDABAD RESIDENT COUNT 
+# 🧮 AHMEDABAD RESIDENT COUNT
 # ---------------------------------------------------------
 ahmedabad_count = 0
 ahmedabad_pct_str = "0%"
@@ -586,6 +645,7 @@ if total_adverse_count > 0 and 'ZONE' in df_live_filtered.columns:
         ahmedabad_mask = zone_mask
     ahmedabad_count = int(ahmedabad_mask.sum())
     ahmedabad_pct_str = f"{int((ahmedabad_count / total_adverse_count) * 100)}%"
+
 # ---------------------------------------------------------
 # 🧮 MORE FIELD OPTIONS
 # ---------------------------------------------------------
@@ -614,26 +674,23 @@ INDIAN_STATES_UTS = [
     "Delhi", "Jammu and Kashmir", "Ladakh", "Lakshadweep", "Puducherry",
 ]
 def split_multi(val): return [x.strip() for x in str(val).split(",") if x.strip()]
+
 def safe_unique_options(series):
-    """Build a sorted list of clean string options from a column, safely.
-    Prevents: TypeError: '<' not supported between instances of 'NoneType' and 'str'
-    which happens when sorted() tries to compare a real None with real strings.
-    Every value is converted to a string BEFORE sorting, and blank/NaN/None-like
-    values are dropped."""
-    if series is None:
-        return []
+    if series is None: return []
     cleaned = set()
     for x in series.dropna().tolist():
         s = str(x).strip()
         if s and s.lower() not in ("nan", "none", "nat", "<na>"):
             cleaned.add(s)
     return sorted(cleaned)
+
 def colnum_to_letter(n):
     letters = ""
     while n > 0:
         n, rem = divmod(n - 1, 26)
         letters = chr(65 + rem) + letters
     return letters
+
 # ---------------------------------------------------------
 # 🧮 BIFURCATED BREAKDOWNS 
 # ---------------------------------------------------------
@@ -669,6 +726,7 @@ if not df_live_filtered.empty:
         outcomes_series = df_live_filtered['Treatment Outcome'].fillna("").astype(str).str.strip().str.upper()
         outcomes_dict = outcomes_series.value_counts().to_dict()
         outcome_breakdown = {k: v for k, v in outcomes_dict.items() if k != ""}
+
 # ==========================================
 # 📊 KPI CARDS
 # ==========================================
@@ -676,6 +734,7 @@ kpi_placeholder = st.container()
 st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
 st.markdown("<div class='section-title'>📋 Detailed Breakdown of Adverse Outcomes</div>", unsafe_allow_html=True)
 breakdown_placeholder = st.container()
+
 def render_kpi_card(icon, label, value, sub="", years_str="", accent="#0A3A6E", accent_soft="#eef2ff"):
     sub_html = f"<div class='kpi-sub'>{sub}</div>" if sub else ""
     years_html = ""
@@ -693,18 +752,15 @@ def render_kpi_card(icon, label, value, sub="", years_str="", accent="#0A3A6E", 
         {years_html}
     </div>
     """
+
 with kpi_placeholder:
     k_col1, k_col2, k_col3, k_col4, k_col5 = st.columns(5)
-    with k_col1:
-        st.markdown(render_kpi_card("📊", "Total Adverse Outcomes", total_adverse_count, sub=f"{entry_completed_count} of {total_adverse_count} entries completed", accent="#0A3A6E", accent_soft="#e8eef7"), unsafe_allow_html=True)
-    with k_col2:
-        st.markdown(render_kpi_card("🏠", "Ahmedabad Residents", ahmedabad_pct_str, sub=f"{ahmedabad_count} of {total_adverse_count} records", accent="#1d4ed8", accent_soft="#e8edfd"), unsafe_allow_html=True)
-    with k_col3:
-        st.markdown(render_kpi_card("✅", "Success Rate", success_overall_str, sub="Among eligible regimens", years_str=success_years_str, accent="#16a34a", accent_soft="#e8f8ee"), unsafe_allow_html=True)
-    with k_col4:
-        st.markdown(render_kpi_card("⚠️", "Initial Death Rate", init_death_overall_str, sub="Died before treatment initiation", years_str=init_death_years_str, accent="#f97316", accent_soft="#fff1e6"), unsafe_allow_html=True)
-    with k_col5:
-        st.markdown(render_kpi_card("💔", "Normal Death Rate", death_overall_str, sub="During treatment", years_str=death_years_str, accent="#dc2626", accent_soft="#fdeaea"), unsafe_allow_html=True)
+    with k_col1: st.markdown(render_kpi_card("📊", "Total Adverse Outcomes", total_adverse_count, sub=f"{entry_completed_count} of {total_adverse_count} entries completed", accent="#0A3A6E", accent_soft="#e8eef7"), unsafe_allow_html=True)
+    with k_col2: st.markdown(render_kpi_card("🏠", "Ahmedabad Residents", ahmedabad_pct_str, sub=f"{ahmedabad_count} of {total_adverse_count} records", accent="#1d4ed8", accent_soft="#e8edfd"), unsafe_allow_html=True)
+    with k_col3: st.markdown(render_kpi_card("✅", "Success Rate", success_overall_str, sub="Among eligible regimens", years_str=success_years_str, accent="#16a34a", accent_soft="#e8f8ee"), unsafe_allow_html=True)
+    with k_col4: st.markdown(render_kpi_card("⚠️", "Initial Death Rate", init_death_overall_str, sub="Died before treatment initiation", years_str=init_death_years_str, accent="#f97316", accent_soft="#fff1e6"), unsafe_allow_html=True)
+    with k_col5: st.markdown(render_kpi_card("💔", "Normal Death Rate", death_overall_str, sub="During treatment", years_str=death_years_str, accent="#dc2626", accent_soft="#fdeaea"), unsafe_allow_html=True)
+
 def render_breakdown_card(title, data_dict, total, accent):
     if total > 0 and data_dict:
         row_parts = []
@@ -729,12 +785,15 @@ def render_breakdown_card(title, data_dict, total, accent):
         {rows_html}
     </div>
     """
+
 with breakdown_placeholder:
     b1, b2, b3 = st.columns(3)
     with b1: st.markdown(render_breakdown_card("Comorbidity", comorbidity_breakdown, total_adverse_count, accent="#0891b2"), unsafe_allow_html=True)
     with b2: st.markdown(render_breakdown_card("Ahmedabad Residency (During Treatment)", residency_breakdown, total_adverse_count, accent="#2563eb"), unsafe_allow_html=True)
     with b3: st.markdown(render_breakdown_card("Adverse Outcomes Overview", outcome_breakdown, total_adverse_count, accent="#ca8a04"), unsafe_allow_html=True)
+
 st.markdown("<hr style='border: none; border-top: 1px solid #e2e8f0; margin: 28px 0;'>", unsafe_allow_html=True)
+
 # ==========================================
 # 🚨 DISCOVER & AUTO-SYNC NEW ADVERSE OUTCOMES
 # ==========================================
@@ -752,44 +811,40 @@ if st.session_state.role in PUSH_ALLOWED_ROLES:
                         if c_clean == p_clean: return df[c]
                 if fallback_idx < len(df.columns): return df.iloc[:, fallback_idx]
                 return pd.Series([""] * len(df))
-            # THIS WEEK
+
             out_this = get_col_series_sync(df_this_raw_full, ['TREATMENT OUTCOME'], 62).fillna("").astype(str).str.upper().str.strip()
             id_this = get_col_series_sync(df_this_raw_full, ['EPISODE ID'], 12).fillna("").astype(str).str.upper().str.strip()
             
-            # PREV WEEK
             out_prev = get_col_series_sync(df_prev_raw_full, ['TREATMENT OUTCOME'], 62).fillna("").astype(str).str.upper().str.strip()
             id_prev = get_col_series_sync(df_prev_raw_full, ['EPISODE ID'], 12).fillna("").astype(str).str.upper().str.strip()
             
             good_outcomes = ["CURED", "COMPLETE", "CHANGED", "SUCCESS", "WRONGLY"]
             blank_variants = ["", "NAN", "N/A", "NONE", "(BLANKS)", "BLANK", "NULL"]
             
-            # Identify purely Adverse in This Week
             is_adv_this = ~out_this.str.contains('|'.join(good_outcomes), na=False)
             has_out_this = ~out_this.isin(blank_variants)
             df_adv_this = df_this_raw_full[is_adv_this & has_out_this & (id_this != "")].copy()
             id_out_this = id_this[is_adv_this & has_out_this & (id_this != "")] + "_" + out_this[is_adv_this & has_out_this & (id_this != "")]
             
-            # Identify Keys in Prev Week
             prev_keys = set((id_prev + "_" + out_prev).tolist())
-            
-            # DELTA ENGINE: Keep rows from This Week NOT present in Prev Week
             new_delta_mask = ~id_out_this.isin(prev_keys)
             df_new_adv = df_adv_this[new_delta_mask].copy()
-            # EXTRA SAFETY: Ensure they aren't already in the Master
+
             if not df_new_adv.empty:
                 existing_live_ids = set(df_live_raw['Episode ID'].astype(str).str.upper().str.strip().tolist()) if 'Episode ID' in df_live_raw.columns else set()
                 new_adv_ids = get_col_series_sync(df_new_adv, ['EPISODE ID'], 12).astype(str).str.upper().str.strip()
                 df_new_adv = df_new_adv[~new_adv_ids.isin(existing_live_ids)].copy()
+
             if df_new_adv.empty:
                 st.success("✅ Your Master Database is fully up to date! No new adverse outcomes found this week.")
             else:
                 st.warning(f"⚠️ Found {len(df_new_adv)} truly new adverse outcomes that occurred this week.")
                 
-                # Tagging mechanism for easy sharing
                 default_tag = datetime.now(india_tz).strftime('%d %b %Y').upper()
                 st.markdown("<div style='background-color: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 4px solid #b91c1c; margin-bottom: 15px;'>", unsafe_allow_html=True)
                 adverse_date_tag = st.text_input("🏷️ Tag for New Outcomes (Used to filter and share the weekly list):", value=default_tag)
                 st.markdown("</div>", unsafe_allow_html=True)
+
                 upload_cols = df_live_raw.columns.tolist()
                 df_upload = pd.DataFrame(columns=upload_cols)
                 
@@ -813,15 +868,16 @@ if st.session_state.role in PUSH_ALLOWED_ROLES:
                     if d_col in df_upload.columns:
                         parsed_d = parse_indian_dates(df_upload[d_col])
                         df_upload[d_col] = parsed_d.dt.strftime('%d-%b-%Y').fillna("")
+
                 if 'On Treatment Days' in upload_cols and 'Outcome Date' in df_upload.columns:
                     df_upload['On Treatment Days'] = compute_on_treatment_days_series(
                         df_upload.get('Diagnosis Date'),
                         df_upload.get('Initiation Date'),
                         df_upload['Outcome Date']
                     )
+
                 df_upload = df_upload.fillna("")
                 
-                # ---- Resolve ZONE using the "zone" mapping sub-sheet you added ----
                 tu_to_zone, uhc_to_tu_zone = load_zone_lookup()
                 if (tu_to_zone or uhc_to_tu_zone) and 'ZONE' in df_upload.columns:
                     tb_unit_col_vals = df_upload['TB Unit'] if 'TB Unit' in df_upload.columns else pd.Series([""] * len(df_upload))
@@ -831,13 +887,8 @@ if st.session_state.role in PUSH_ALLOWED_ROLES:
                         for z, tu, phi in zip(df_upload['ZONE'], tb_unit_col_vals, phi_col_vals)
                     ]
                 elif not (tu_to_zone or uhc_to_tu_zone):
-                    st.info(
-                        f"ℹ️ Couldn't read the '{ZONE_LOOKUP_SHEET_NAME}' mapping sheet (or it has no usable "
-                        "TU/Zone columns) — falling back to the register's own Zone/District column."
-                    )
+                    st.info(f"ℹ️ Couldn't read the '{ZONE_LOOKUP_SHEET_NAME}' mapping sheet (or it has no usable TU/Zone columns) — falling back to the register's own Zone/District column.")
                 
-                # ---- Clean placeholder/junk values so a blank ZONE never gets
-                # ---- pushed to the sheet as a literal "0" or "0.0" ----
                 BLANK_LIKE = {"0", "0.0", "NAN", "NONE", "NAT", "<NA>", "-"}
                 for junk_col in ["ZONE", "TB Unit", "PHI (Current)", "Facility Type"]:
                     if junk_col in df_upload.columns:
@@ -846,17 +897,10 @@ if st.session_state.role in PUSH_ALLOWED_ROLES:
                 
                 st.dataframe(df_upload, hide_index=True)
                 
-                # Warn (don't silently push) if ZONE couldn't be matched for any row —
-                # this is almost always a column-name mismatch in the source register.
                 if 'ZONE' in df_upload.columns:
                     n_blank_zone = int((df_upload['ZONE'].astype(str).str.strip() == "").sum())
                     if n_blank_zone > 0:
-                        st.error(
-                            f"⚠️ {n_blank_zone} of {len(df_upload)} row(s) have a BLANK Zone. "
-                            "This means their TB Unit / PHI (Current) value didn't match anything in the "
-                            f"'{ZONE_LOOKUP_SHEET_NAME}' sheet. Add that TB Unit/UHC to the '{ZONE_LOOKUP_SHEET_NAME}' "
-                            "sheet, or edit the Zone cell above, before pushing."
-                        )
+                        st.error(f"⚠️ {n_blank_zone} of {len(df_upload)} row(s) have a BLANK Zone. This means their TB Unit / PHI (Current) value didn't match anything in the '{ZONE_LOOKUP_SHEET_NAME}' sheet. Add that TB Unit/UHC to the '{ZONE_LOOKUP_SHEET_NAME}' sheet, or edit the Zone cell above, before pushing.")
                 
                 if st.button("🚀 Push to Master Database", type="primary"):
                     with st.spinner("Appending new outcomes to Google Sheets..."):
@@ -868,6 +912,7 @@ if st.session_state.role in PUSH_ALLOWED_ROLES:
                             st.rerun()
                         except Exception as e:
                             st.error(f"❌ Failed to append rows: {e}")
+
 # ==========================================
 # 🛠️ REPAIR TOOL — fix rows already pushed with a blank/"0" ZONE
 # ==========================================
@@ -942,6 +987,7 @@ if st.session_state.role in PUSH_ALLOWED_ROLES:
                             st.error(f"❌ Failed to update Zones: {e}")
         else:
             st.info("No ZONE column found in the Master Sheet to repair.")
+
 # ==========================================
 # 🛠️ REPAIR TOOL — backfill blank "On Treatment Days" in the Master Sheet
 # ==========================================
@@ -1009,6 +1055,7 @@ if st.session_state.role in PUSH_ALLOWED_ROLES:
                             st.error(f"❌ Failed to update On Treatment Days: {e}")
         else:
             st.info("Master Sheet is missing 'On Treatment Days' and/or 'Outcome Date' columns.")
+
 # ==========================================
 # 📝 LINE LIST SECTION — quick-pick date filters directly above the table
 # ==========================================
@@ -1028,6 +1075,7 @@ with top_reset_col:
             if k in st.session_state:
                 del st.session_state[k]
         st.rerun()
+
 def render_date_filter_col(label, preset_key, custom_key, month_key):
     st.markdown(f"<div class='filter-col-label'>{label}</div>", unsafe_allow_html=True)
     preset_val = st.session_state.get(preset_key, "All Time")
@@ -1047,11 +1095,13 @@ def render_date_filter_col(label, preset_key, custom_key, month_key):
             if st.button("▶", key=f"{month_key}_next", use_container_width=True):
                 st.session_state[month_key] = shift_month(anchor, 1)
                 st.rerun()
+
 d1, d2, d3 = st.columns(3)
 with d1: render_date_filter_col("Diagnosis Date", "diag_preset", "diag_custom", "diag_month_anchor")
 with d2: render_date_filter_col("Initiation Date", "init_preset", "init_custom", "init_month_anchor")
 with d3: render_date_filter_col("Outcome Date", "out_preset", "out_custom", "out_month_anchor")
 st.markdown("</div>", unsafe_allow_html=True)
+
 if not df_live_filtered.empty:
     df_display = df_live_filtered.copy()
     df_display = df_display.drop(columns=[c for c in df_display.columns if c.endswith('_dt')], errors='ignore')
@@ -1069,6 +1119,7 @@ if not df_live_filtered.empty:
     df_display[COL_MONTHS_RESIDING] = pd.to_numeric(df_display[COL_MONTHS_RESIDING], errors='coerce')
     df_display[COL_TRANSFER_OUT_DATE] = pd.to_datetime(df_display[COL_TRANSFER_OUT_DATE], errors='coerce', dayfirst=True)
     df_display[COL_REJECT_DATE] = pd.to_datetime(df_display[COL_REJECT_DATE], errors='coerce', dayfirst=True)
+
     f1, f2, f3, f4 = st.columns(4)
     with f1:
         opts_out = safe_unique_options(df_options_source['Treatment Outcome']) if 'Treatment Outcome' in df_options_source.columns else []
@@ -1081,10 +1132,12 @@ if not df_live_filtered.empty:
         st.multiselect("Filter by Adverse Date Tag", opts_adv, key="linelist_adverse_filter")
     with f4:
         st.selectbox("Data Entry Status", ["All", "Pending Entry", "Completed"], key="linelist_entry_status")
+
     # Apply the new ADVERSE DATE tag filter
     sel_adv_val = st.session_state.get("linelist_adverse_filter", [])
     if sel_adv_val and 'ADVERSE DATE' in df_live_filtered.columns:
         df_display = df_display[df_display['ADVERSE DATE'].isin(sel_adv_val)]
+
     df_display = df_display.reset_index(drop=True)
     editable_cols = [c for c in REQUIRED_ENTRY_COLS]
     locked_cols = [col for col in df_display.columns if col not in editable_cols]
@@ -1120,6 +1173,7 @@ if not df_live_filtered.empty:
     # Download Button
     csv_data = df_display.to_csv(index=False).encode('utf-8')
     st.download_button("📥 Download This Line List (CSV)", csv_data, "Adverse_Outcomes_LineList.csv", "text/csv")
+
     if "master_data_editor" in st.session_state and st.session_state["master_data_editor"]["edited_rows"]:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("💾 Save All Changes to Master Database", type="primary", use_container_width=True):
@@ -1132,10 +1186,12 @@ if not df_live_filtered.empty:
                 episode_id_col = header_to_col.get('Episode ID', 8)
                 edited_rows_dict = st.session_state["master_data_editor"]["edited_rows"]
                 warnings_list = []
+
                 for row_idx, changes in edited_rows_dict.items():
                     current_row = df_display.iloc[int(row_idx)]
                     ep_id = current_row['Episode ID']
                     outcome_val = str(current_row.get('Treatment Outcome', '')).upper()
+
                     try:
                         cell = new_sheet.find(str(ep_id), in_column=episode_id_col)
                         def val_for(col):
@@ -1148,13 +1204,16 @@ if not df_live_filtered.empty:
                             if hasattr(v, "strftime"):
                                 return v.strftime("%d-%b-%Y")
                             return str(v)
+
                         field_values = {col: val_for(col) for col in editable_cols}
                         field_values[COL_SUBMITTED_BY] = st.session_state.current_user
                         field_values[COL_LAST_UPDATED] = datetime.now(india_tz).strftime("%d-%b-%Y %H:%M:%S")
+
                         if field_values.get(COL_PLACE_OF_DEATH, "") and "DIED" not in outcome_val and "DEATH" not in outcome_val:
                             warnings_list.append(f"Episode {ep_id}: Place of Death was filled but Treatment Outcome isn't Died.")
                         if field_values.get(COL_REJECT_DATE, "") and "REJECT" not in outcome_val:
                             warnings_list.append(f"Episode {ep_id}: Reject Date was filled but Treatment Outcome isn't Rejected.")
+
                         updates = []
                         for col, val in field_values.items():
                             col_idx = header_to_col.get(col)
@@ -1162,10 +1221,13 @@ if not df_live_filtered.empty:
                                 continue
                             letter = colnum_to_letter(col_idx)
                             updates.append({"range": f"{letter}{cell.row}", "values": [[val]]})
+
                         if updates:
                             new_sheet.batch_update(updates)
+
                     except Exception as e:
                         st.error(f"❌ Failed to update Episode ID {ep_id}. Ensure the ID exists in the Episode ID column. Error: {e}")
+
                 st.success("✅ All field data successfully saved to the Master Sheet!")
                 for w in warnings_list:
                     st.warning(f"⚠️ {w}")
